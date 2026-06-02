@@ -227,7 +227,7 @@ _seed_demo()
 
 @router.get("")
 async def list_artifacts(
-    type: str | None = Query(None, description="Filter by type: code, image, doc"),
+    type: str = Query("code", description="Filter by type: code, image, doc"),
     session_id: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),

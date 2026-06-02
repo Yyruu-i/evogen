@@ -1,6 +1,7 @@
 """Agent Chat SSE 端点 — 流式 LLM 对话（集成联网搜索 + 浏览器工具调用）."""
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -379,10 +380,11 @@ async def _execute_tool(tool_name: str, arguments: dict, session_id: str) -> str
             snap = await agent.snapshot()
 
             # ── 自动写入制品（图像 Tab）──
+            b64_data = base64.b64encode(png_bytes).decode()
             artifact_id = store_artifact(
                 "image",
                 f"截图_{snap.title or '页面'}",
-                path,  # 本地文件路径，前端按路径加载
+                f"data:image/png;base64,{b64_data}",
                 session_id=session_id,
             )
             logger.info("Screenshot artifact stored: %s", artifact_id)

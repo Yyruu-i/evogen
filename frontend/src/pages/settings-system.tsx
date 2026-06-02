@@ -2,7 +2,13 @@ import { useQuery } from '@tanstack/react-query';
 import { systemApi } from '@/lib/api';
 import { formatUptime } from '@/lib/utils';
 import { Skeleton } from '@/components/shared/skeleton';
-import { Terminal, CheckCircle } from 'lucide-react';
+import { Terminal, CheckCircle, Database } from 'lucide-react';
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+}
 
 export function SettingsSystemPage() {
   const { data: health, isLoading } = useQuery({
@@ -11,18 +17,24 @@ export function SettingsSystemPage() {
     refetchInterval: 15000,
   });
 
+  const { data: capacity } = useQuery({
+    queryKey: ['system', 'capacity'],
+    queryFn: () => systemApi.capacity(),
+    staleTime: 30000,
+  });
+
   return (
     <div className="max-w-lg">
       <h3 className="text-[15px] font-semibold mb-4">系统状态</h3>
 
-      {isLoading ? (
-        <div className="space-y-3">
-          <Skeleton className="h-20 w-full" />
-          <Skeleton className="h-20 w-full" />
-        </div>
-      ) : health ? (
-        <div className="space-y-4">
-          {/* Health card */}
+      <div className="space-y-4">
+        {isLoading ? (
+          <div className="space-y-3">
+            <Skeleton className="h-20 w-full" />
+            <Skeleton className="h-20 w-full" />
+          </div>
+        ) : health ? (
+          /* Health card */
           <div className="glass-card p-5">
             <div className="flex items-center gap-3 mb-4">
               <div className="w-10 h-10 rounded-xl bg-success/10 flex items-center justify-center">
@@ -51,17 +63,70 @@ export function SettingsSystemPage() {
               </div>
             </div>
           </div>
+        ) : (
+          <div className="glass-card p-5 text-center">
+            <Terminal className="w-8 h-8 text-muted mx-auto mb-2" />
+            <p className="text-[13px] text-muted">无法获取系统状态</p>
+            <p className="text-[12px] text-muted">请检查 Gateway 是否正常运行</p>
+          </div>
+        )}
 
-          {/* Logs */}
-          <SystemLogs />
-        </div>
-      ) : (
-        <div className="glass-card p-5 text-center">
-          <Terminal className="w-8 h-8 text-muted mx-auto mb-2" />
-          <p className="text-[13px] text-muted">无法获取系统状态</p>
-          <p className="text-[12px] text-muted">请检查 Gateway 是否正常运行</p>
-        </div>
-      )}
+        {/* Storage capacity card (independent) */}
+        {capacity && (
+          <div className="glass-card p-5">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-xl bg-accent/10 flex items-center justify-center">
+                <Database className="w-5 h-5" style={{ color: 'var(--color-accent)' }} />
+              </div>
+              <div>
+                <p className="text-[14px] font-semibold">存储用量</p>
+                <p className="text-[11px] text-muted">
+                  已用 {capacity.usage_percent.toFixed(1)}% · {capacity.total_facts} 条记忆
+                </p>
+              </div>
+            </div>
+
+            {/* Progress bar */}
+            <div className="mb-3">
+              <div className="flex justify-between text-[11px] text-muted mb-1">
+                <span>{formatBytes(capacity.storage_estimate_bytes)}</span>
+                <span>{capacity.capacity_limit.toLocaleString()} 条上限</span>
+              </div>
+              <div className="h-2 rounded-full bg-tertiary/50 overflow-hidden">
+                <div
+                  className="h-full rounded-full transition-all duration-500"
+                  style={{
+                    width: `${Math.min(capacity.usage_percent, 100)}%`,
+                    background: capacity.usage_percent > 80
+                      ? 'var(--color-danger)'
+                      : capacity.usage_percent > 50
+                        ? 'var(--color-warning)'
+                        : 'var(--color-accent)',
+                  }}
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-3 text-[12px]">
+              <div className="bg-tertiary/50 rounded-lg p-3">
+                <p className="text-muted mb-0.5">向量存储</p>
+                <p className="font-mono font-medium">{formatBytes(capacity.total_vector_bytes)}</p>
+              </div>
+              <div className="bg-tertiary/50 rounded-lg p-3">
+                <p className="text-muted mb-0.5">总占用</p>
+                <p className="font-mono font-medium">{formatBytes(capacity.storage_estimate_bytes)}</p>
+              </div>
+              <div className="bg-tertiary/50 rounded-lg p-3">
+                <p className="text-muted mb-0.5">记忆总数</p>
+                <p className="font-mono font-medium">{capacity.total_facts}</p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Logs */}
+        <SystemLogs />
+      </div>
     </div>
   );
 }

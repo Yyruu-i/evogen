@@ -308,7 +308,10 @@ export const systemApi = {
     const qs = new URLSearchParams();
     if (params?.limit) qs.set('limit', String(params.limit));
     if (params?.level) qs.set('level', params.level);
-    const query = qs.toString();
-    return request<import('@/types').LogListResponse>(`/system/logs${query ? '?' + query : ''}`);
+    return request<import('@/types').LogListResponse>(`/system/logs?${qs}`);
+  },
+
+  capacity() {
+    return request<import('@/types').MemoryCapacityResponse>('/memory/capacity');
   },
 };

@@ -239,6 +239,16 @@ export interface LogListResponse {
   logs: LogEntry[];
 }
 
+export interface MemoryCapacityResponse {
+  total_facts: number;
+  storage_estimate_bytes: number;
+  capacity_limit: number;
+  usage_percent: number;
+  total_vector_bytes: number;
+  by_layer: Record<string, number>;
+  by_type: Record<string, number>;
+}
+
 // ── API wrappers ───────────────────────────────────────────────
 export interface ApiResponse<T> {
   ok: true;

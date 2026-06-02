@@ -12,6 +12,8 @@ from backend.api.sessions_routes import router as sessions_router
 from backend.api.artifacts_routes import router as artifacts_router
 from backend.api.tools_routes import router as tools_router
 from backend.api.resource_routes import router as resource_router
+from backend.api.system_routes import router as system_router
+from backend.api.browser_routes import router as browser_router
 
 router = APIRouter(prefix="/api/v1")
 
@@ -25,5 +27,7 @@ router.include_router(skills_router)
 router.include_router(artifacts_router)
 router.include_router(tools_router)
 router.include_router(resource_router)
+router.include_router(system_router)
+router.include_router(browser_router)
 
 __all__ = ["router"]

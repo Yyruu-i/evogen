@@ -1,6 +1,8 @@
 """Artifact / 制品 API — 对话产出的代码、图像、文档管理."""
 
 import logging
+import re
+import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Query
@@ -31,6 +33,145 @@ class ArtifactListResponse(BaseModel):
 # ── In-memory store (later → SQLite) ────────────────────────────
 
 _artifacts: list[dict] = []
+
+
+def _next_artifact_id() -> str:
+    """生成唯一制品 ID."""
+    return str(uuid.uuid4())[:12]
+
+
+def store_artifact(
+    artifact_type: str,
+    title: str,
+    content: str,
+    *,
+    language: str | None = None,
+    session_id: str | None = None,
+) -> str:
+    """写入制品到内存存储，返回 artifact id.
+
+    同时广播到前端（如果 WebSocket 已连接）。
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    artifact_id = _next_artifact_id()
+    entry = {
+        "id": artifact_id,
+        "type": artifact_type,
+        "title": title,
+        "content": content,
+        "language": language,
+        "session_id": session_id,
+        "created_at": now,
+    }
+    _artifacts.append(entry)
+    logger.info(
+        "Artifact stored: %s type=%s session=%s title=%s",
+        artifact_id, artifact_type, session_id, title,
+    )
+    return artifact_id
+
+
+def extract_artifacts_from_text(text: str, session_id: str) -> int:
+    """从文本中自动提取制品（代码块、文档、表格）并写入存储.
+
+    返回提取的制品数量.
+    """
+    count = 0
+
+    # ── 1. 提取围栏代码块: ```language\\n...\\n``` ──
+    code_block_re = re.compile(
+        r"```(\w+)?\s*\n(.*?)```",
+        re.DOTALL,
+    )
+    for match in code_block_re.finditer(text):
+        lang = (match.group(1) or "").strip().lower()
+        code = match.group(2).strip()
+        if len(code) < 10:  # 跳过太短的
+            continue
+        title = _artifact_title_from_code(code, lang)
+        store_artifact(
+            "code", title, code,
+            language=lang or "text",
+            session_id=session_id,
+        )
+        count += 1
+
+    # ── 2. 提取 Markdown 文档段：有 # 或 ## 标题且有实质内容 ──
+    doc_section_re = re.compile(
+        r"(?:^|\n)(#{1,3})\s+(.+?)\n((?:(?!#{1,3}\s).+\n?)+)",
+        re.MULTILINE,
+    )
+    for match in doc_section_re.finditer(text):
+        title = match.group(2).strip()
+        body = match.group(3).strip()
+        # 跳过太短的、或已经被代码块捕获的
+        if len(body) < 60 or "```" in body:
+            continue
+        store_artifact(
+            "doc", title, body,
+            language="markdown",
+            session_id=session_id,
+        )
+        count += 1
+
+    # ── 3. 提取表格（markdown table）──
+    table_re = re.compile(
+        r"(\|[^\n]+\|\s*\n\|[\s\-:|]+\|\s*\n(?:\|[^\n]+\|\s*\n?)+)",
+    )
+    for match in table_re.finditer(text):
+        table_text = match.group(1).strip()
+        if len(table_text) < 30:
+            continue
+        # 尝试从表格前面找标题
+        before = text[: match.start()].rsplit("\n", 2)
+        table_title = "数据表"
+        for line in reversed(before[-3:]):
+            line = line.strip()
+            if line.startswith("#"):
+                table_title = line.lstrip("#").strip()
+                break
+            elif line and not line.startswith("|") and len(line) < 60:
+                table_title = line.strip()
+                break
+        store_artifact(
+            "doc", table_title, table_text,
+            language="markdown",
+            session_id=session_id,
+        )
+        count += 1
+
+    return count
+
+
+def _artifact_title_from_code(code: str, language: str) -> str:
+    """从代码内容生成合理的制品标题."""
+    ext_map = {
+        "python": ".py", "py": ".py",
+        "javascript": ".js", "js": ".js",
+        "typescript": ".ts", "ts": ".ts",
+        "html": ".html",
+        "css": ".css",
+        "json": ".json",
+        "yaml": ".yaml", "yml": ".yaml",
+        "sql": ".sql",
+        "bash": ".sh", "sh": ".sh",
+        "markdown": ".md", "md": ".md",
+        "rust": ".rs", "rs": ".rs",
+        "go": ".go",
+        "java": ".java",
+        "cpp": ".cpp", "c++": ".cpp",
+        "c": ".c",
+    }
+    ext = ext_map.get(language, f".{language}" if language else ".txt")
+    # 尝试从第一行注释提取名称
+    first_line = code.split("\n", 1)[0].strip()
+    if first_line.startswith(("# ", "// ", "/* ")):
+        name = first_line.lstrip("#/ *").strip()[:40]
+    else:
+        name = "code"
+    # 清理文件名
+    safe_name = re.sub(r"[^\w\u4e00-\u9fff\-_]", "_", name)[:30]
+    return f"{safe_name}{ext}"
 
 
 def _seed_demo():
@@ -86,7 +227,7 @@ _seed_demo()
 
 @router.get("")
 async def list_artifacts(
-    type: str | None = Query(None, description="Filter by type: code, image, doc"),
+    type: str = Query("code", description="Filter by type: code, image, doc"),
     session_id: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),

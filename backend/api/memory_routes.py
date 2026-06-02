@@ -7,6 +7,7 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
 
 from backend.memory.engine import EvoMemoryEngine, MemoryFact, MemoryStats, get_engine
 
@@ -58,6 +59,13 @@ def _stats_to_dict(stats: MemoryStats) -> dict:
         "by_type": stats.by_type,
         "last_extraction_at": stats.last_extraction_at,
         "total_vector_bytes": stats.total_vector_bytes,
+        # ── 容量管理字段 ──
+        "archive_count": stats.archive_count,
+        "capacity_limit": stats.capacity_limit,
+        "storage_estimate_bytes": stats.storage_estimate_bytes,
+        "usage_percent": stats.usage_percent,
+        "archived_by_age_count": stats.archived_by_age_count,
+        "archived_by_importance_count": stats.archived_by_importance_count,
     }
 
 
@@ -261,4 +269,98 @@ async def reinforce_fact(fact_id: str, request: Optional[dict] = None):
         )
     except Exception as e:
         logger.error(f"reinforce_fact failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail={"ok": False, "error": str(e)})
+
+
+# ════════════════════════════════════════════════════════
+# GET /api/v1/memory/capacity — 容量信息
+# ════════════════════════════════════════════════════════
+
+
+@router.get("/capacity")
+async def get_capacity():
+    """获取记忆容量信息."""
+    engine = _get_engine()
+
+    try:
+        info = engine.get_capacity_info()
+        return {"ok": True, "data": _stats_to_dict(info)}
+    except Exception as e:
+        logger.error(f"get_capacity failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail={"ok": False, "error": str(e)})
+
+
+# ════════════════════════════════════════════════════════
+# PUT /api/v1/memory/capacity/limit — 设置容量上限
+# ════════════════════════════════════════════════════════
+
+
+class SetLimitRequest(BaseModel):
+    limit: int
+
+
+@router.put("/capacity/limit")
+async def set_capacity_limit(req: SetLimitRequest):
+    """设置记忆容量上限（最小 100）."""
+    if req.limit < 100:
+        raise HTTPException(
+            status_code=400,
+            detail={"ok": False, "error": "limit must be at least 100"},
+        )
+
+    engine = _get_engine()
+    try:
+        new_limit = engine.set_capacity_limit(req.limit)
+        return {"ok": True, "data": {"capacity_limit": new_limit}}
+    except Exception as e:
+        logger.error(f"set_capacity_limit failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail={"ok": False, "error": str(e)})
+
+
+# ════════════════════════════════════════════════════════
+# POST /api/v1/memory/capacity/cleanup — 清理/归档
+# ════════════════════════════════════════════════════════
+
+
+class CleanupRequest(BaseModel):
+    strategy: str  # "age", "importance", "auto"
+    days: Optional[int] = None
+    importance_threshold: Optional[float] = None
+    dry_run: bool = False
+
+
+@router.post("/capacity/cleanup")
+async def cleanup_capacity(req: CleanupRequest):
+    """清理记忆释放容量."""
+    if req.strategy not in ("age", "importance", "auto"):
+        raise HTTPException(
+            status_code=400,
+            detail={"ok": False, "error": f"Unknown strategy: {req.strategy}"},
+        )
+
+    engine = _get_engine()
+    try:
+        if req.strategy == "age":
+            count = engine.cleanup_by_age(
+                days=req.days or 30, dry_run=req.dry_run
+            )
+        elif req.strategy == "importance":
+            count = engine.cleanup_by_importance(
+                threshold=req.importance_threshold or 0.15,
+                dry_run=req.dry_run,
+            )
+        else:  # auto
+            if req.dry_run:
+                return {
+                    "ok": True,
+                    "data": {
+                        "dry_run": True,
+                        "current_capacity": _stats_to_dict(engine.get_capacity_info()),
+                    },
+                }
+            count = engine.auto_archive_if_over_limit()
+
+        return {"ok": True, "data": {"archived": count, "dry_run": req.dry_run}}
+    except Exception as e:
+        logger.error(f"cleanup_capacity failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail={"ok": False, "error": str(e)})

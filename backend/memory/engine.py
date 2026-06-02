@@ -8,7 +8,7 @@ import json
 import logging
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 from backend.config import config
@@ -67,6 +67,14 @@ class MemoryStats:
     last_extraction_at: Optional[str] = None
     total_vector_bytes: int = 0
 
+    # ── 容量管理字段 ──
+    archive_count: int = 0
+    capacity_limit: int = 10000
+    storage_estimate_bytes: int = 0
+    usage_percent: float = 0.0
+    archived_by_age_count: int = 0
+    archived_by_importance_count: int = 0
+
 
 # ══════════════════════════════════════════════════
 # 事件类型（延迟导入避免循环依赖，但 MemoryFact 已就绪）
@@ -108,6 +116,19 @@ _PRIVACY_MAP: Dict[str, str] = {
 def _utcnow_iso() -> str:
     """返回 UTC 时间的 ISO 格式字符串."""
     return datetime.now(timezone.utc).isoformat()
+
+
+def _estimate_storage(db) -> int:
+    """估算记忆总存储占用（SQLite + Chroma 向量）."""
+    row = db.execute(
+        "SELECT COUNT(*), COALESCE(SUM(LENGTH(content)), 0) FROM memory_facts"
+    ).fetchone()
+    if not row:
+        return 0
+    count, total_text_len = row[0], row[1]
+    text_bytes = int(total_text_len * 1.5)
+    vector_bytes = count * 1024 * 4
+    return text_bytes + vector_bytes
 
 
 # ══════════════════════════════════════════════════
@@ -506,12 +527,131 @@ class EvoMemoryEngine:
         # 近似向量存储字节数: dim * count * 4 bytes/float32
         total_vector_bytes = total * self._embedding.dim * 4
 
+        # ── 容量字段 ──
+        archive_count = self._db.execute(
+            "SELECT COUNT(*) FROM memory_facts WHERE layer = 'archive'"
+        ).fetchone()[0]
+        limit = self._get_capacity_limit()
+        storage_est = _estimate_storage(self._db)
+
         return MemoryStats(
             total_facts=total,
             by_layer=by_layer,
             by_type=by_type,
             last_extraction_at=self._last_extraction_at,
             total_vector_bytes=total_vector_bytes,
+            archive_count=archive_count,
+            capacity_limit=limit,
+            storage_estimate_bytes=storage_est,
+            usage_percent=round((total / limit * 100), 2) if limit > 0 else 0.0,
+        )
+
+    # ══════════════════════════════════════════════════
+    # Capacity Management
+    # ══════════════════════════════════════════════════
+
+    _DEFAULT_CAPACITY_LIMIT = 10000
+
+    def _get_capacity_limit(self) -> int:
+        row = self._db.execute(
+            "SELECT value_json FROM persona_attributes WHERE key = 'memory_capacity_limit'"
+        ).fetchone()
+        if row:
+            try:
+                return int(json.loads(row["value_json"]))
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+        return self._DEFAULT_CAPACITY_LIMIT
+
+    def _set_capacity_limit_db(self, limit: int) -> None:
+        self._db.execute(
+            "INSERT OR REPLACE INTO persona_attributes (key, value_json, updated_at) VALUES ('memory_capacity_limit', ?, ?)",
+            (json.dumps(limit), _utcnow_iso()),
+        )
+        self._db.commit()
+
+    def get_capacity_info(self) -> MemoryStats:
+        stats = self.get_stats()
+        row = self._db.execute(
+            "SELECT COALESCE(SUM(CASE WHEN tags_json LIKE '%auto_archived_by_age%' THEN 1 ELSE 0 END), 0), "
+            "COALESCE(SUM(CASE WHEN tags_json LIKE '%auto_archived_by_importance%' THEN 1 ELSE 0 END), 0) "
+            "FROM memory_facts WHERE layer = 'archive'"
+        ).fetchone()
+        stats.archived_by_age_count = row[0] if row else 0
+        stats.archived_by_importance_count = row[1] if row else 0
+        return stats
+
+    def set_capacity_limit(self, limit: int) -> int:
+        if limit < 100:
+            raise ValueError("Capacity limit must be at least 100")
+        self._set_capacity_limit_db(limit)
+        return limit
+
+    def cleanup_by_age(self, days: int, dry_run: bool = False) -> int:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        rows = self._db.execute(
+            "SELECT id FROM memory_facts WHERE layer IN ('transient', 'working') AND created_at < ? ORDER BY importance ASC",
+            (cutoff,),
+        ).fetchall()
+        if dry_run:
+            return len(rows)
+        count = 0
+        for r in rows:
+            self._archive_fact(r["id"], reason="auto_archived_by_age")
+            count += 1
+        if count:
+            self._db.commit()
+        return count
+
+    def cleanup_by_importance(self, threshold: float, dry_run: bool = False) -> int:
+        rows = self._db.execute(
+            "SELECT id FROM memory_facts WHERE layer IN ('transient', 'working') AND importance <= ? ORDER BY importance ASC",
+            (threshold,),
+        ).fetchall()
+        if dry_run:
+            return len(rows)
+        count = 0
+        for r in rows:
+            self._archive_fact(r["id"], reason="auto_archived_by_importance")
+            count += 1
+        if count:
+            self._db.commit()
+        return count
+
+    def auto_archive_if_over_limit(self) -> int:
+        limit = self._get_capacity_limit()
+        total_active = self._db.execute(
+            "SELECT COUNT(*) FROM memory_facts WHERE layer != 'archive'"
+        ).fetchone()[0]
+        if total_active <= limit:
+            return 0
+        max_archive = max(int(total_active * 0.1), 1)
+        archived = 0
+        if archived < max_archive:
+            rows = self._db.execute(
+                "SELECT id FROM memory_facts WHERE layer = 'transient' AND importance <= 0.15 ORDER BY importance ASC LIMIT ?",
+                (max_archive - archived,),
+            ).fetchall()
+            for r in rows:
+                self._archive_fact(r["id"], reason="auto_archived_by_importance")
+                archived += 1
+        if archived < max_archive:
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+            rows = self._db.execute(
+                "SELECT id FROM memory_facts WHERE layer IN ('transient', 'working') AND created_at < ? ORDER BY importance ASC LIMIT ?",
+                (cutoff, max_archive - archived),
+            ).fetchall()
+            for r in rows:
+                self._archive_fact(r["id"], reason="auto_archived_by_age")
+                archived += 1
+        if archived > 0:
+            self._db.commit()
+        return archived
+
+    def _archive_fact(self, fact_id: str, reason: str = "") -> None:
+        self._db.execute(
+            "UPDATE memory_facts SET layer = 'archive', tags_json = json_insert(COALESCE(tags_json, '[]'), '$[#]', ?), updated_at = ? WHERE id = ?",
+            (reason, _utcnow_iso(), fact_id),
         )
 
     # ══════════════════════════════════════════════════
@@ -794,6 +934,9 @@ class EvoMemoryEngine:
                     continue
 
             self._last_extraction_at = now
+
+            # ── 容量检查：超过上限则自动归档 ──
+            self.auto_archive_if_over_limit()
 
         except Exception as e:
             logger.error(f"extract_and_store failed: {e}", exc_info=True)

@@ -280,3 +280,15 @@ async def get_artifact(artifact_id: str):
                 ),
             }
     return {"ok": False, "error": "Artifact not found"}
+
+
+@router.delete("/{artifact_id}")
+async def delete_artifact(artifact_id: str):
+    """删除制品."""
+    global _artifacts
+    for i, a in enumerate(_artifacts):
+        if a["id"] == artifact_id:
+            deleted = _artifacts.pop(i)
+            logger.info("Artifact deleted: %s type=%s title=%s", artifact_id, deleted["type"], deleted["title"])
+            return {"ok": True, "data": {"deleted": artifact_id}}
+    return {"ok": False, "error": "Artifact not found"}

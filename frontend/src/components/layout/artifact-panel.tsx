@@ -1,11 +1,11 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Highlight, themes } from 'prism-react-renderer';
 import { Code2, Image, FileText, PanelRightClose, PanelRightOpen, X, ChevronDown } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { useArtifacts } from '@/hooks/use-artifacts';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { artifactsApi } from '@/lib/api';
-import type { Artifact as ArtifactType } from '@/types';
+import { useChatContext } from '@/context/chat-context';
+import type { Artifact as ArtifactType, ArtifactListResponse } from '@/types';
 
 type ArtifactTab = 'code' | 'image' | 'doc';
 
@@ -21,8 +21,26 @@ export function ArtifactPanel() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [imgErrors, setImgErrors] = useState<Set<string>>(new Set());
   const queryClient = useQueryClient();
+  const { state: { activeSessionId } } = useChatContext();
 
-  const { data, isLoading } = useArtifacts({ type: activeTab });
+  // Track dark/light mode for code theme selection
+  const [isDark, setIsDark] = useState(
+    () => document.documentElement.classList.contains('dark'),
+  );
+  useEffect(() => {
+    const observer = new MutationObserver(() => {
+      setIsDark(document.documentElement.classList.contains('dark'));
+    });
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+    return () => observer.disconnect();
+  }, []);
+
+  const { data, isLoading } = useQuery<ArtifactListResponse>({
+    queryKey: ['artifacts', { type: activeTab, session_id: activeSessionId }],
+    queryFn: () => artifactsApi.list({ type: activeTab, session_id: activeSessionId }),
+    staleTime: 10000,
+    enabled: !!activeSessionId,
+  });
   const rawArtifacts: ArtifactType[] = data?.artifacts || [];
   // Dedup by title — keep first occurrence
   const seen = new Set<string>();
@@ -213,7 +231,7 @@ export function ArtifactPanel() {
                       )}
                     >
                       <Highlight
-                        theme={themes.nightOwl}
+                        theme={isDark ? themes.nightOwl : themes.github}
                         code={artifact.content}
                         language={lang as any}
                       >

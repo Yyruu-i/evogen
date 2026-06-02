@@ -289,8 +289,8 @@ export function streamChat(
 
 // ── System ─────────────────────────────────────────────────────
 export const systemApi = {
-  health() {
-    return request<import('@/types').HealthResponse>('/health');
+  status() {
+    return request<import('@/types').SystemStatusResponse>('/system/status');
   },
 
   platforms() {

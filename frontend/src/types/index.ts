@@ -222,11 +222,35 @@ export interface PlatformListResponse {
 }
 
 // ── Health / System ─────────────────────────────────────────────
-export interface HealthResponse {
-  uptime: number;
-  sessions: number;
-  memory_usage?: number;
-  gateway_status: string;
+export interface SystemStatusResponse {
+  agent: {
+    status: string;
+    version: string;
+    uptime_seconds: number;
+    uptime_human: string;
+    python_version: string;
+    started_at: string;
+  };
+  gateway: {
+    running: boolean;
+    profiles: Array<{ profile: string; pid: number | null }>;
+    error: string | null;
+  };
+  database: {
+    connected: boolean;
+    memory_facts: number;
+    error?: string;
+  };
+  memory_capacity: {
+    total_facts: number;
+    archive_count: number;
+    capacity_limit: number;
+    usage_percent: number;
+    storage_estimate_bytes: number;
+    by_layer: Record<string, number>;
+    error?: string;
+  };
+  server_time: string;
 }
 
 export interface LogEntry {
@@ -236,7 +260,9 @@ export interface LogEntry {
 }
 
 export interface LogListResponse {
-  logs: LogEntry[];
+  total: number;
+  entries: LogEntry[];
+  log_file: string;
 }
 
 export interface MemoryCapacityResponse {

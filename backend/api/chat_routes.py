@@ -1,9 +1,11 @@
-"""Agent Chat SSE 端点 — 流式 LLM 对话（集成联网搜索）."""
+"""Agent Chat SSE 端点 — 流式 LLM 对话（集成联网搜索 + 浏览器工具调用）."""
 
 import asyncio
 import json
 import logging
 import os
+import re
+import tempfile
 import uuid
 from datetime import datetime, timezone
 
@@ -31,6 +33,89 @@ router = APIRouter(prefix="/agent", tags=["agent"])
 LLM_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 LLM_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 LLM_MODEL = os.getenv("LLM_MODEL", "deepseek-chat")
+
+# ── Browser 工具定义 (OpenAI function-calling 格式) ──
+
+BROWSER_TOOLS: list[dict] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_navigate",
+            "description": "打开指定的网页 URL。当用户说'打开XX网站'、'帮我看XX网页'、'访问XX'时使用此工具。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "要打开的完整 URL，如 https://www.baidu.com",
+                    }
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_snapshot",
+            "description": "获取当前页面的可交互元素快照（按钮、链接、输入框等）。通常配合 browser_navigate 后使用，以便了解页面结构后执行点击/填写操作。",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_screenshot",
+            "description": "截取当前页面的截图。当用户说'截图'、'帮我看看页面长什么样'时使用此工具。",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_click",
+            "description": "点击页面上的指定元素。需先从 browser_snapshot 获取元素的 ref ID。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ref": {
+                        "type": "string",
+                        "description": "元素引用 ID，如 @e5，从 browser_snapshot 结果中获取",
+                    }
+                },
+                "required": ["ref"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_fill",
+            "description": "在输入框中填写文本。需先从 browser_snapshot 获取输入框的 ref ID。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ref": {
+                        "type": "string",
+                        "description": "输入框的引用 ID，如 @e3",
+                    },
+                    "text": {
+                        "type": "string",
+                        "description": "要填写的文本内容",
+                    },
+                },
+                "required": ["ref", "text"],
+            },
+        },
+    },
+]
+
+# 全部工具（可后续扩展 terminal、web_search 等）
+ALL_TOOLS: list[dict] = BROWSER_TOOLS
+
+# ── 工具调用限制 ──
+
+MAX_TOOL_ITERATIONS = 8  # 最多工具调用轮数，防止死循环
 
 
 class ChatRequest(BaseModel):
@@ -238,14 +323,263 @@ def _load_recent_messages(session_id: str, max_messages: int = 20) -> list[dict]
     ]
 
 
+# ════════════════════════════════════════════════════════
+# 工具执行器
+# ════════════════════════════════════════════════════════
+
+
+async def _execute_tool(tool_name: str, arguments: dict, session_id: str) -> str:
+    """执行浏览器工具调用，返回结果文本。所有操作自动允许，无需用户确认。"""
+    from backend.tools import get_browser_agent
+
+    agent = get_browser_agent()
+
+    try:
+        if tool_name == "browser_navigate":
+            url = arguments.get("url", "")
+            if not url:
+                return "错误：缺少 url 参数"
+            result = await agent.navigate(url)
+            if result.success:
+                snap = await agent.snapshot()
+                elems = "\n".join(
+                    f"  [{e.ref}] {e.role}: {e.name or e.description}"
+                    for e in snap.elements[:30]
+                )
+                return (
+                    f"✅ 已打开 {result.url}\n"
+                    f"标题: {snap.title}\n"
+                    f"页面可交互元素 ({len(snap.elements)} 个):\n{elems}"
+                )
+            return f"❌ 打开失败: {result.error}"
+
+        elif tool_name == "browser_snapshot":
+            snap = await agent.snapshot()
+            elems = "\n".join(
+                f"  [{e.ref}] {e.role}: {e.name or e.description}"
+                for e in snap.elements[:50]
+            )
+            return (
+                f"📄 当前页面: {snap.title}\n"
+                f"URL: {snap.url}\n"
+                f"可交互元素 ({len(snap.elements)} 个):\n{elems}"
+            )
+
+        elif tool_name == "browser_screenshot":
+            png_bytes = await agent.screenshot()
+            fd, path = tempfile.mkstemp(suffix=".png", prefix="browser_ss_")
+            os.write(fd, png_bytes)
+            os.close(fd)
+            snap = await agent.snapshot()
+            return (
+                f"📸 截图已保存\n"
+                f"路径: {path}\n"
+                f"大小: {len(png_bytes)} bytes\n"
+                f"页面标题: {snap.title}"
+            )
+
+        elif tool_name == "browser_click":
+            ref = arguments.get("ref", "")
+            if not ref:
+                return "错误：缺少 ref 参数"
+            result = await agent.click(ref)
+            if result.success:
+                snap = await agent.snapshot()
+                return f"✅ 已点击 {ref}。当前页面: {snap.title}"
+            return f"❌ 点击失败: {result.error}"
+
+        elif tool_name == "browser_fill":
+            ref = arguments.get("ref", "")
+            text = arguments.get("text", "")
+            if not ref:
+                return "错误：缺少 ref 参数"
+            result = await agent.fill(ref, text)
+            if result.success:
+                return f"✅ 已在 {ref} 填入 '{text}'"
+            return f"❌ 填写失败: {result.error}"
+
+        else:
+            return f"未知工具: {tool_name}"
+
+    except Exception as e:
+        logger.error(f"Tool execution failed: {tool_name} {e}", exc_info=True)
+        return f"工具执行异常: {str(e)[:200]}"
+
+
+# ════════════════════════════════════════════════════════
+# LLM 调用（非流式，用于工具调用循环）
+# ════════════════════════════════════════════════════════
+
+
+async def _call_llm_nonstream(
+    messages: list[dict],
+    tools: list[dict] | None = None,
+) -> dict:
+    """调用 DeepSeek LLM（非流式），返回完整响应 dict.
+
+    返回格式: {"content": str|None, "tool_calls": list|None}
+    """
+    url = f"{LLM_BASE_URL.rstrip('/')}/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {LLM_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload: dict = {
+        "model": LLM_MODEL,
+        "messages": messages,
+        "temperature": 0.7,
+        "max_tokens": 4096,
+    }
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        resp = await client.post(url, json=payload, headers=headers)
+        if resp.status_code != 200:
+            error_text = resp.text[:500]
+            logger.error(f"LLM API error: {resp.status_code} {error_text}")
+            return {"content": f"❌ LLM 调用失败 (HTTP {resp.status_code})", "tool_calls": None}
+
+        data = resp.json()
+        choice = data.get("choices", [{}])[0]
+        msg = choice.get("message", {})
+
+        # 检查 tool_calls
+        raw_tool_calls = msg.get("tool_calls")
+        if raw_tool_calls:
+            tool_calls = []
+            for tc in raw_tool_calls:
+                fn = tc.get("function", {})
+                try:
+                    args = json.loads(fn.get("arguments", "{}"))
+                except json.JSONDecodeError:
+                    args = {}
+                tool_calls.append({
+                    "id": tc.get("id", ""),
+                    "name": fn.get("name", ""),
+                    "arguments": args,
+                })
+            return {"content": msg.get("content"), "tool_calls": tool_calls}
+
+        return {"content": msg.get("content", ""), "tool_calls": None}
+
+
+# ════════════════════════════════════════════════════════
+# 核心：工具调用循环 + 流式输出
+# ════════════════════════════════════════════════════════
+
+
+async def _tool_loop_stream_generator(
+    llm_messages: list[dict],
+    session_id: str,
+    original_message: str,
+    search_context: str,
+):
+    """工具调用循环：反复调用 LLM → 执行工具 → 追加结果，直到 LLM 返回纯文本.
+
+    所有工具调用自动允许（auto-approve），无需用户确认。
+    工具执行进度通过 SSE 事件输出给前端。
+    """
+    iteration = 0
+    full_text_response = ""
+
+    while iteration < MAX_TOOL_ITERATIONS:
+        iteration += 1
+
+        # 调用 LLM（非流式，带工具定义）
+        result = await _call_llm_nonstream(llm_messages, tools=ALL_TOOLS)
+
+        # ── 情况 1：有 tool_calls → 执行工具 ──
+        if result.get("tool_calls"):
+            for tc in result["tool_calls"]:
+                tool_name = tc["name"]
+                tool_args = tc["arguments"]
+                tool_call_id = tc.get("id", f"call_{iteration}")
+
+                logger.info(
+                    "Tool call #%d: %s args=%s", iteration, tool_name, tool_args
+                )
+
+                # 通知前端：开始执行工具
+                yield f"data: {json.dumps({'status': 'tool_start', 'tool': tool_name, 'args': tool_args})}\n\n"
+
+                # 执行工具
+                tool_result = await _execute_tool(tool_name, tool_args, session_id)
+
+                # 保存工具调用和结果到数据库
+                _save_message(session_id, "system",
+                    f"🔧 调用工具: {tool_name}({json.dumps(tool_args, ensure_ascii=False)})\n结果: {tool_result[:500]}")
+
+                # 通知前端：工具执行完成
+                yield f"data: {json.dumps({'status': 'tool_result', 'tool': tool_name, 'result': tool_result[:300]})}\n\n"
+
+                # 将工具调用和结果追加到 messages
+                llm_messages.append({
+                    "role": "assistant",
+                    "content": result.get("content") or "",
+                    "tool_calls": [{
+                        "id": tool_call_id,
+                        "type": "function",
+                        "function": {
+                            "name": tool_name,
+                            "arguments": json.dumps(tool_args, ensure_ascii=False),
+                        },
+                    }],
+                })
+                llm_messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content": tool_result,
+                })
+
+            # 工具执行完，继续下一轮 LLM 调用
+            continue
+
+        # ── 情况 2：纯文本响应 → 流式输出 ──
+        text = result.get("content") or ""
+        full_text_response = text
+
+        if text:
+            # 流式输出文本（逐字输出模拟流式体验）
+            # 按句子分割逐块发送，避免过于细碎
+            chunk_size = 20
+            for i in range(0, len(text), chunk_size):
+                chunk = text[i:i + chunk_size]
+                yield f"data: {json.dumps({'chunk': chunk})}\n\n"
+                await asyncio.sleep(0.01)  # 微小延迟模拟流式
+
+        break  # 工具循环结束
+
+    else:
+        # 达到最大迭代次数仍未得到纯文本
+        full_text_response = "⚠️ 工具调用达到最大轮数，请简化您的请求。"
+        yield f"data: {json.dumps({'chunk': full_text_response})}\n\n"
+
+    # 保存助手回复并记录经验
+    if full_text_response:
+        _save_message(session_id, "assistant", full_text_response)
+        await _record_experience(session_id, original_message, full_text_response)
+
+    yield "data: [DONE]\n\n"
+
+
 async def _llm_stream_generator(message: str, session_id: str):
-    """调用 DeepSeek LLM 流式 API，逐 chunk 输出 SSE."""
+    """主入口：处理用户消息，管理联网搜索 + 浏览器工具调用 + LLM 对话.
+
+    流程：
+    1. 初始化会话 & 保存用户消息
+    2. 联网搜索（如触发）
+    3. 构建 system prompt + 历史上下文
+    4. 工具调用循环（LLM 可自主调用浏览器工具）
+    5. 流式输出最终回复
+    """
     session_id, is_new = _ensure_session(session_id)
 
     # 保存用户消息
     _save_message(session_id, "user", message)
 
-    # 为首条消息更新会话标题（取前 18 字）
+    # 为首条消息更新会话标题
     if is_new:
         title = message.strip()[:18]
         if len(message.strip()) > 18:
@@ -256,20 +590,18 @@ async def _llm_stream_generator(message: str, session_id: str):
 
     yield f"data: {json.dumps({'status': 'started', 'session': session_id, 'is_new': is_new})}\n\n"
 
-    # ── 联网搜索 / 网页抓取 ──
+    # ── 联网搜索 / 网页抓取（保持不变） ──
     search_context = ""
     msg_urls = extract_urls(message)
     msg_should_search = should_search(message)
 
     if msg_urls:
-        for url in msg_urls[:3]:  # 最多抓取 3 个链接
+        for url in msg_urls[:3]:
             try:
                 logger.info(f"Fetching URL with Jina: {url[:80]}")
                 page_content = await fetch_jina(url)
-                # 存入对话记录
                 formatted = format_page_content(page_content, url)
                 _save_message(session_id, "system", formatted)
-                # 累积搜索上下文（给 LLM 用完整内容）
                 search_context += f"\n\n### 网页: {url}\n{page_content}"
             except Exception as e:
                 logger.warning(f"Jina fetch failed for {url}: {e}")
@@ -280,96 +612,48 @@ async def _llm_stream_generator(message: str, session_id: str):
             logger.info(f"Tavily search triggered for: {message[:80]}")
             results = await search_tavily(message)
             formatted = format_search_results(results, message)
-            # 存入对话记录
             _save_message(session_id, "system", formatted)
-            # 累积搜索上下文
             search_context += "\n\n### 搜索结果\n" + formatted
         except Exception as e:
             logger.warning(f"Tavily search failed: {e}")
 
-    # 如果同时有 URL 和搜索关键词，两条路径都会触发
     if msg_should_search and msg_urls:
         try:
-            logger.info(f"Tavily search (alongside URLs) for: {message[:80]}")
             results = await search_tavily(message)
             formatted = format_search_results(results, message)
             _save_message(session_id, "system", formatted)
             search_context += "\n\n### 搜索结果\n" + formatted
         except Exception as e:
-            logger.warning(f"Tavily search (alongside URLs) failed: {e}")
+            logger.warning(f"Tavily search failed: {e}")
 
     if not LLM_API_KEY:
         yield f"data: {json.dumps({'chunk': '⚠️ 未配置 LLM API Key。请在 ~/.hermes/.env 中设置 DEEPSEEK_API_KEY。'})}\n\n"
         yield "data: [DONE]\n\n"
         return
 
-    # ── 构建 system prompt（包含人格 + 记忆 + 搜索上下文） ──
+    # ── 构建 system prompt（含人格 + 记忆 + 搜索上下文 + 工具说明） ──
     system_prompt = await _build_system_prompt(session_id, message)
     system_prompt = build_search_augmented_prompt(system_prompt, message, search_context)
 
-    # ── 加载对话历史上下文（多轮对话关联修复） ──
+    # 注入工具使用说明
+    system_prompt += (
+        "\n\n## 可用工具\n"
+        "你可以使用浏览器工具来打开网页、截图、点击元素、填写表单。\n"
+        "当用户说'打开XX网站'、'帮我搜索'、'截图'等时，直接调用对应工具。\n"
+        "所有工具操作自动执行，无需向用户确认。\n"
+    )
+
+    # ── 加载对话历史 ──
     recent_history = _load_recent_messages(session_id, max_messages=20)
-    # 构建完整 messages 数组：system + 历史 + 当前用户消息
-    llm_messages = [{"role": "system", "content": system_prompt}]
+    llm_messages: list[dict] = [{"role": "system", "content": system_prompt}]
     llm_messages.extend(recent_history)
     llm_messages.append({"role": "user", "content": message})
 
-    url = f"{LLM_BASE_URL.rstrip('/')}/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {LLM_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "model": LLM_MODEL,
-        "messages": llm_messages,
-        "temperature": 0.7,
-        "max_tokens": 4096,
-        "stream": True,
-    }
-
-    full_response = ""
-
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        try:
-            async with client.stream("POST", url, json=payload, headers=headers) as response:
-                if response.status_code != 200:
-                    error_text = await response.aread()
-                    logger.error(f"LLM API error: {response.status_code} {error_text[:300]}")
-                    yield f"data: {json.dumps({'chunk': f'❌ LLM 调用失败 (HTTP {response.status_code})'})}\n\n"
-                    yield "data: [DONE]\n\n"
-                    return
-
-                async for line in response.aiter_lines():
-                    if line.startswith("data: "):
-                        data_str = line[6:].strip()
-                        if data_str == "[DONE]":
-                            break
-                        try:
-                            data = json.loads(data_str)
-                            delta = data.get("choices", [{}])[0].get("delta", {})
-                            content = delta.get("content", "")
-                            if content:
-                                full_response += content
-                                yield f"data: {json.dumps({'chunk': content})}\n\n"
-                        except json.JSONDecodeError:
-                            continue
-
-        except httpx.RequestError as e:
-            logger.error(f"LLM request failed: {e}")
-            yield f"data: {json.dumps({'chunk': f'❌ 网络请求失败: {str(e)[:100]}'})}\n\n"
-        except Exception as e:
-            logger.error(f"LLM stream error: {e}")
-            yield f"data: {json.dumps({'chunk': f'❌ 流式处理异常: {str(e)[:100]}'})}\n\n"
-
-    # 保存助手回复
-    if full_response:
-        _save_message(session_id, "assistant", full_response)
-
-    # ── 记录经验轨迹 (Fix 3) ──
-    if full_response:
-        await _record_experience(session_id, message, full_response)
-
-    yield "data: [DONE]\n\n"
+    # ── 进入工具调用循环 ──
+    async for sse_event in _tool_loop_stream_generator(
+        llm_messages, session_id, message, search_context
+    ):
+        yield sse_event
 
 
 @router.post("/chat")

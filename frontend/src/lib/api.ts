@@ -222,6 +222,10 @@ export const artifactsApi = {
   get(id: string) {
     return request<import('@/types').Artifact>(`/artifacts/${id}`);
   },
+
+  delete(id: string) {
+    return request<{ deleted: string }>(`/artifacts/${id}`, { method: 'DELETE' });
+  },
 };
 
 // ── Chat (SSE streaming) ──────────────────────────────────────

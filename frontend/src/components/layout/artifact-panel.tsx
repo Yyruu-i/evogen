@@ -1,7 +1,10 @@
 import { useState } from 'react';
+import { Highlight, themes } from 'prism-react-renderer';
 import { Code2, Image, FileText, PanelRightClose, PanelRightOpen, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useArtifacts } from '@/hooks/use-artifacts';
+import { useQueryClient } from '@tanstack/react-query';
+import { artifactsApi } from '@/lib/api';
 import type { Artifact as ArtifactType } from '@/types';
 
 type ArtifactTab = 'code' | 'image' | 'doc';
@@ -16,6 +19,8 @@ export function ArtifactPanel() {
   const [isOpen, setIsOpen] = useState(true);
   const [activeTab, setActiveTab] = useState<ArtifactTab>('code');
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [imgErrors, setImgErrors] = useState<Set<string>>(new Set());
+  const queryClient = useQueryClient();
 
   const { data, isLoading } = useArtifacts({ type: activeTab });
   const artifacts: ArtifactType[] = data?.artifacts || [];
@@ -48,6 +53,16 @@ export function ArtifactPanel() {
     }
     const ext = artifact.title.split('.').pop()?.toLowerCase();
     return ext && languageMap[ext] ? languageMap[ext] : 'text';
+  };
+
+  const handleDelete = async (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    try {
+      await artifactsApi.delete(id);
+      queryClient.invalidateQueries({ queryKey: ['artifacts'] });
+    } catch (err) {
+      console.error('Failed to delete artifact:', err);
+    }
   };
 
   return (
@@ -165,13 +180,14 @@ export function ArtifactPanel() {
                     </div>
                     <button
                       className="w-5 h-5 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-hover ml-1"
-                      onClick={(e) => { e.stopPropagation(); /* TODO: delete */ }}
+                      onClick={(e) => handleDelete(e, artifact.id)}
+                      aria-label={`删除 ${artifact.title}`}
                     >
                       <X className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} />
                     </button>
                   </div>
 
-                  {/* Content — code with syntax highlighting */}
+                  {/* Content — code with Prism syntax highlighting */}
                   {(activeTab === 'code' || activeTab === 'doc') && (
                     <div
                       className={cn(
@@ -181,20 +197,35 @@ export function ArtifactPanel() {
                           : (isExpanded ? 'max-h-[400px]' : 'max-h-[80px]'),
                       )}
                     >
-                      <pre
-                        className={cn(
-                          'text-[11px] leading-relaxed overflow-x-auto m-0 rounded-b-lg',
-                          activeTab === 'doc' && 'whitespace-pre-wrap',
+                      <Highlight
+                        theme={themes.nightOwl}
+                        code={artifact.content}
+                        language={lang as any}
+                      >
+                        {({ tokens, getLineProps, getTokenProps }) => (
+                          <pre
+                            className={cn(
+                              'text-[11px] leading-relaxed overflow-x-auto m-0 rounded-b-lg',
+                              activeTab === 'doc' && 'whitespace-pre-wrap',
+                            )}
+                            style={{
+                              background: 'var(--color-bg-tertiary)',
+                              padding: '12px',
+                              fontFamily: 'var(--font-mono)',
+                              border: '1px solid var(--color-border)',
+                              borderTop: 'none',
+                            }}
+                          >
+                            {tokens.map((line, i) => (
+                              <div key={i} {...getLineProps({ line })}>
+                                {line.map((token, key) => (
+                                  <span key={key} {...getTokenProps({ token })} />
+                                ))}
+                              </div>
+                            ))}
+                          </pre>
                         )}
-                        style={{
-                          background: 'var(--color-bg-tertiary)',
-                          color: 'var(--color-text-secondary)',
-                          padding: '12px',
-                          fontFamily: 'var(--font-mono)',
-                          border: '1px solid var(--color-border)',
-                          borderTop: 'none',
-                        }}
-                      ><code>{artifact.content}</code></pre>
+                      </Highlight>
                     </div>
                   )}
 
@@ -203,19 +234,34 @@ export function ArtifactPanel() {
                     <div
                       className={cn(
                         'overflow-hidden transition-all duration-300',
-                        isExpanded ? 'max-h-[400px]' : 'max-h-[100px]',
+                        isExpanded ? 'max-h-[500px]' : 'max-h-[100px]',
                       )}
                     >
-                      <div
-                        className="flex items-center justify-center p-4 rounded-b-lg"
-                        style={{
-                          background: 'var(--color-bg-tertiary)',
-                          border: '1px solid var(--color-border)',
-                          borderTop: 'none',
-                        }}
-                      >
-                        <Image className="w-12 h-12" style={{ color: 'var(--color-text-muted)' }} />
-                      </div>
+                      {imgErrors.has(artifact.id) ? (
+                        <div
+                          className="flex items-center justify-center p-8 rounded-b-lg"
+                          style={{
+                            background: 'var(--color-bg-tertiary)',
+                            border: '1px solid var(--color-border)',
+                            borderTop: 'none',
+                          }}
+                        >
+                          <Image className="w-12 h-12" style={{ color: 'var(--color-text-muted)' }} />
+                        </div>
+                      ) : (
+                        <img
+                          src={artifact.content}
+                          alt={artifact.title}
+                          className="w-full object-contain rounded-b-lg"
+                          style={{
+                            background: 'var(--color-bg-tertiary)',
+                            border: '1px solid var(--color-border)',
+                            borderTop: 'none',
+                            maxHeight: '500px',
+                          }}
+                          onError={() => setImgErrors((prev) => new Set(prev).add(artifact.id))}
+                        />
+                      )}
                     </div>
                   )}
 

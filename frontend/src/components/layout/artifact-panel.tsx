@@ -23,7 +23,14 @@ export function ArtifactPanel() {
   const queryClient = useQueryClient();
 
   const { data, isLoading } = useArtifacts({ type: activeTab });
-  const artifacts: ArtifactType[] = data?.artifacts || [];
+  const rawArtifacts: ArtifactType[] = data?.artifacts || [];
+  // Dedup by title — keep first occurrence
+  const seen = new Set<string>();
+  const artifacts = rawArtifacts.filter((a) => {
+    if (seen.has(a.title)) return false;
+    seen.add(a.title);
+    return true;
+  });
 
   const languageMap: Record<string, string> = {
     python: 'python',

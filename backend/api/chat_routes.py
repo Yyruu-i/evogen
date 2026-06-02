@@ -25,6 +25,12 @@ from backend.api.web_search import (
     should_search,
 )
 
+# 制品自动写入
+from backend.api.artifacts_routes import (
+    extract_artifacts_from_text,
+    store_artifact,
+)
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/agent", tags=["agent"])
@@ -371,10 +377,20 @@ async def _execute_tool(tool_name: str, arguments: dict, session_id: str) -> str
             os.write(fd, png_bytes)
             os.close(fd)
             snap = await agent.snapshot()
+
+            # ── 自动写入制品（图像 Tab）──
+            artifact_id = store_artifact(
+                "image",
+                f"截图_{snap.title or '页面'}",
+                path,  # 本地文件路径，前端按路径加载
+                session_id=session_id,
+            )
+            logger.info("Screenshot artifact stored: %s", artifact_id)
+
             return (
-                f"📸 截图已保存\n"
-                f"路径: {path}\n"
-                f"大小: {len(png_bytes)} bytes\n"
+                f"📸 截图已保存（制品 #{artifact_id[-6:]})\\n"
+                f"路径: {path}\\n"
+                f"大小: {len(png_bytes)} bytes\\n"
                 f"页面标题: {snap.title}"
             )
 
@@ -560,6 +576,15 @@ async def _tool_loop_stream_generator(
     if full_text_response:
         _save_message(session_id, "assistant", full_text_response)
         await _record_experience(session_id, original_message, full_text_response)
+
+        # ── 自动提取制品（代码块 / 文档 / 表格）──
+        try:
+            artifact_count = extract_artifacts_from_text(full_text_response, session_id)
+            if artifact_count:
+                logger.info(f"Auto-extracted {artifact_count} artifact(s) from LLM response")
+                yield f"data: {json.dumps({'status': 'artifact_extracted', 'count': artifact_count})}\n\n"
+        except Exception as e:
+            logger.warning(f"Artifact extraction failed: {e}")
 
     yield "data: [DONE]\n\n"
 

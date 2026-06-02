@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Highlight, themes } from 'prism-react-renderer';
-import { Code2, Image, FileText, PanelRightClose, PanelRightOpen, X } from 'lucide-react';
+import { Code2, Image, FileText, PanelRightClose, PanelRightOpen, X, ChevronDown } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useArtifacts } from '@/hooks/use-artifacts';
 import type { Artifact as ArtifactType } from '@/types';
@@ -152,9 +152,16 @@ export function ArtifactPanel() {
                 >
                   {/* Title bar */}
                   <div
-                    className="flex items-start justify-between p-3 cursor-pointer"
+                    className="flex items-center gap-1 px-3 py-2.5 cursor-pointer select-none"
                     onClick={() => setExpandedId(isExpanded ? null : artifact.id)}
                   >
+                    <ChevronDown
+                      className={cn(
+                        'w-3.5 h-3.5 shrink-0 transition-transform duration-200',
+                        isExpanded && 'rotate-180',
+                      )}
+                      style={{ color: 'var(--color-text-muted)' }}
+                    />
                     <div className="flex-1 min-w-0">
                       <span className="text-[12px] font-semibold truncate block">
                         {artifact.title}

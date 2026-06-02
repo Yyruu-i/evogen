@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Highlight, themes } from 'prism-react-renderer';
 import { Code2, Image, FileText, PanelRightClose, PanelRightOpen, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useArtifacts } from '@/hooks/use-artifacts';
@@ -171,7 +172,7 @@ export function ArtifactPanel() {
                     </button>
                   </div>
 
-                  {/* Content — code with syntax highlighting */}
+                  {/* Content — code with Prism syntax highlighting */}
                   {(activeTab === 'code' || activeTab === 'doc') && (
                     <div
                       className={cn(
@@ -181,20 +182,35 @@ export function ArtifactPanel() {
                           : (isExpanded ? 'max-h-[400px]' : 'max-h-[80px]'),
                       )}
                     >
-                      <pre
-                        className={cn(
-                          'text-[11px] leading-relaxed overflow-x-auto m-0 rounded-b-lg',
-                          activeTab === 'doc' && 'whitespace-pre-wrap',
+                      <Highlight
+                        theme={themes.nightOwl}
+                        code={artifact.content}
+                        language={lang as any}
+                      >
+                        {({ tokens, getLineProps, getTokenProps }) => (
+                          <pre
+                            className={cn(
+                              'text-[11px] leading-relaxed overflow-x-auto m-0 rounded-b-lg',
+                              activeTab === 'doc' && 'whitespace-pre-wrap',
+                            )}
+                            style={{
+                              background: 'var(--color-bg-tertiary)',
+                              padding: '12px',
+                              fontFamily: 'var(--font-mono)',
+                              border: '1px solid var(--color-border)',
+                              borderTop: 'none',
+                            }}
+                          >
+                            {tokens.map((line, i) => (
+                              <div key={i} {...getLineProps({ line })}>
+                                {line.map((token, key) => (
+                                  <span key={key} {...getTokenProps({ token })} />
+                                ))}
+                              </div>
+                            ))}
+                          </pre>
                         )}
-                        style={{
-                          background: 'var(--color-bg-tertiary)',
-                          color: 'var(--color-text-secondary)',
-                          padding: '12px',
-                          fontFamily: 'var(--font-mono)',
-                          border: '1px solid var(--color-border)',
-                          borderTop: 'none',
-                        }}
-                      ><code>{artifact.content}</code></pre>
+                      </Highlight>
                     </div>
                   )}
 

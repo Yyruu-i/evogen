@@ -28,6 +28,14 @@ export function ExperiencePage() {
         </div>
       </header>
 
+      {/* Description */}
+      <div
+        className="px-4 md:px-6 py-2.5 text-[12px] leading-relaxed border-b"
+        style={{ color: 'var(--color-text-muted)', borderColor: 'var(--color-border-glass)', background: 'var(--color-bg-subtle, transparent)' }}
+      >
+        AI 做过的任务记录。每次对话完成后自动生成，包含任务轨迹和你的反馈。用于复盘和优化。
+      </div>
+
       {/* Tabs */}
       <div className="flex items-center gap-1 px-4 md:px-6 pb-2 border-b border-color">
         {tabs.map(({ path, label }) => (

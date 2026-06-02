@@ -44,6 +44,14 @@ export function MemoryPage() {
         </button>
       </header>
 
+      {/* Description */}
+      <div
+        className="px-4 md:px-6 py-2.5 text-[12px] leading-relaxed border-b"
+        style={{ color: 'var(--color-text-muted)', borderColor: 'var(--color-border-glass)', background: 'var(--color-bg-subtle, transparent)' }}
+      >
+        AI 记住的关于你的事实和偏好。比如你喜欢喝什么、叫什么名字、做什么工作。存得越久越有价值。
+      </div>
+
       {/* Tabs */}
       <div className="flex items-center gap-1 px-4 md:px-6 pb-2 border-b border-color">
         {tabs.map(({ path, label }) => (

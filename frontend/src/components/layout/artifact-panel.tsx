@@ -3,6 +3,8 @@ import { Highlight, themes } from 'prism-react-renderer';
 import { Code2, Image, FileText, PanelRightClose, PanelRightOpen, X, ChevronDown } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useArtifacts } from '@/hooks/use-artifacts';
+import { useQueryClient } from '@tanstack/react-query';
+import { artifactsApi } from '@/lib/api';
 import type { Artifact as ArtifactType } from '@/types';
 
 type ArtifactTab = 'code' | 'image' | 'doc';
@@ -18,6 +20,7 @@ export function ArtifactPanel() {
   const [activeTab, setActiveTab] = useState<ArtifactTab>('code');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [imgErrors, setImgErrors] = useState<Set<string>>(new Set());
+  const queryClient = useQueryClient();
 
   const { data, isLoading } = useArtifacts({ type: activeTab });
   const rawArtifacts: ArtifactType[] = data?.artifacts || [];
@@ -59,6 +62,16 @@ export function ArtifactPanel() {
     return ext && languageMap[ext] ? languageMap[ext] : 'text';
   };
 
+  const handleDelete = async (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    try {
+      await artifactsApi.delete(id);
+      queryClient.invalidateQueries({ queryKey: ['artifacts'] });
+    } catch (err) {
+      console.error('Failed to delete artifact:', err);
+    }
+  };
+
   return (
     <>
       {/* Toggle button when panel is closed */}
@@ -79,6 +92,7 @@ export function ArtifactPanel() {
 
       {/* ── Artifact Panel ────────────────────────────────────── */}
       <aside
+        aria-hidden={!isOpen}
         className={cn(
           'h-full shrink-0 flex flex-col overflow-hidden relative z-20 transition-all duration-400',
           isOpen ? 'opacity-100' : 'opacity-0 w-0 overflow-hidden',
@@ -181,7 +195,8 @@ export function ArtifactPanel() {
                     </div>
                     <button
                       className="w-5 h-5 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-hover ml-1"
-                      onClick={(e) => { e.stopPropagation(); /* TODO: delete */ }}
+                      onClick={(e) => handleDelete(e, artifact.id)}
+                      aria-label={`删除 ${artifact.title}`}
                     >
                       <X className="w-3 h-3" style={{ color: 'var(--color-text-muted)' }} />
                     </button>

@@ -174,7 +174,13 @@ async def _build_system_prompt(session_id: str, user_message: str) -> str:
     parts: list[str] = []
 
     # 基础 system prompt
-    parts.append("你是 EvoGen，一个智能助手。请用中文简洁回复。")
+    parts.append(
+        "你是 EvoGen，一个智能助手。请用中文简洁回复。\n\n"
+        "## 对话上下文规则\n"
+        "用户可能使用省略主语/宾语的短句（如'地址'、'在哪'、'价格呢'），"
+        "你必须关联前几轮对话历史来理解省略的部分。"
+        "如果上几轮在讨论某家医院，用户说'地址'就是在问那家医院的地址。"
+    )
 
     # ── 人格注入 (Fix 1) ──
     try:
@@ -603,6 +609,9 @@ async def _llm_stream_generator(message: str, session_id: str):
     """
     session_id, is_new = _ensure_session(session_id)
 
+    # ⚠️ 必须在保存用户消息前加载历史，避免当前消息自重复
+    recent_history = _load_recent_messages(session_id, max_messages=20)
+
     # 保存用户消息
     _save_message(session_id, "user", message)
 
@@ -670,8 +679,7 @@ async def _llm_stream_generator(message: str, session_id: str):
         "所有工具操作自动执行，无需向用户确认。\n"
     )
 
-    # ── 加载对话历史 ──
-    recent_history = _load_recent_messages(session_id, max_messages=20)
+    # ── 构建对话消息列表 ──
     llm_messages: list[dict] = [{"role": "system", "content": system_prompt}]
     llm_messages.extend(recent_history)
     llm_messages.append({"role": "user", "content": message})

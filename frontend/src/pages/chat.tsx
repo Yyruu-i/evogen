@@ -21,7 +21,7 @@ export function ChatPage() {
   const pendingSessionRef = useRef<string | null>(null);
   const streamingRef = useRef(false);
   const [streamingUi, setStreamingUi] = useState(false);
-  const [thinkingExpanded, setThinkingExpanded] = useState(true);
+  const [thinkingExpanded, setThinkingExpanded] = useState(false);
   const thinkingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const qc = useQueryClient();
   const { state: chat, setMessages, setStreaming, setActiveSession, updateLastAssistant, finalizeLastAssistant, clearMessages } = useChatContext();

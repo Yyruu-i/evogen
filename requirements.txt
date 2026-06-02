@@ -1,0 +1,27 @@
+# EvoGen Backend Dependencies
+# Phase 0: 核心依赖
+
+# Web Framework
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+
+# Database
+# SQLite3 is built-in (stdlib)
+
+# Vector Store
+chromadb>=1.5.0
+
+# Embeddings
+sentence-transformers>=3.0.0
+torch>=2.0.0
+
+# LLM Client
+openai>=1.50.0
+
+# Testing
+pytest>=8.0.0
+pytest-asyncio>=0.24.0
+
+# Utilities
+python-dotenv>=1.0.0
+pydantic>=2.0.0

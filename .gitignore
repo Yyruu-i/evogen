@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+*.whl
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+
+# Testing & coverage
+.pytest_cache/
+htmlcov/
+.coverage
+.coverage.*
+*.cover
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data & models (large files)
+*.bin
+*.safetensors
+*.gguf
+*.pt
+*.pth
+data/raw/
+models/
+
+# Logs
+*.log
+logs/
+
+# Node (if any frontend)
+node_modules/
+
+# Hermes
+.hermes/

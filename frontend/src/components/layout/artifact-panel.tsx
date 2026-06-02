@@ -17,6 +17,7 @@ export function ArtifactPanel() {
   const [isOpen, setIsOpen] = useState(true);
   const [activeTab, setActiveTab] = useState<ArtifactTab>('code');
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [imgErrors, setImgErrors] = useState<Set<string>>(new Set());
 
   const { data, isLoading } = useArtifacts({ type: activeTab });
   const artifacts: ArtifactType[] = data?.artifacts || [];
@@ -219,19 +220,34 @@ export function ArtifactPanel() {
                     <div
                       className={cn(
                         'overflow-hidden transition-all duration-300',
-                        isExpanded ? 'max-h-[400px]' : 'max-h-[100px]',
+                        isExpanded ? 'max-h-[500px]' : 'max-h-[100px]',
                       )}
                     >
-                      <div
-                        className="flex items-center justify-center p-4 rounded-b-lg"
-                        style={{
-                          background: 'var(--color-bg-tertiary)',
-                          border: '1px solid var(--color-border)',
-                          borderTop: 'none',
-                        }}
-                      >
-                        <Image className="w-12 h-12" style={{ color: 'var(--color-text-muted)' }} />
-                      </div>
+                      {imgErrors.has(artifact.id) ? (
+                        <div
+                          className="flex items-center justify-center p-8 rounded-b-lg"
+                          style={{
+                            background: 'var(--color-bg-tertiary)',
+                            border: '1px solid var(--color-border)',
+                            borderTop: 'none',
+                          }}
+                        >
+                          <Image className="w-12 h-12" style={{ color: 'var(--color-text-muted)' }} />
+                        </div>
+                      ) : (
+                        <img
+                          src={artifact.content}
+                          alt={artifact.title}
+                          className="w-full object-contain rounded-b-lg"
+                          style={{
+                            background: 'var(--color-bg-tertiary)',
+                            border: '1px solid var(--color-border)',
+                            borderTop: 'none',
+                            maxHeight: '500px',
+                          }}
+                          onError={() => setImgErrors((prev) => new Set(prev).add(artifact.id))}
+                        />
+                      )}
                     </div>
                   )}
 

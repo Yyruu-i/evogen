@@ -211,8 +211,8 @@ def _seed_demo():
         {
             "id": "a4",
             "type": "image",
-            "title": "architecture.png",
-            "content": "data:image/svg+xml;base64,",
+            "title": "architecture.svg",
+            "content": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='200' viewBox='0 0 400 200'%3E%3Crect width='400' height='200' fill='%231a1a2e'/%3E%3Ccircle cx='80' cy='100' r='40' fill='%23ff6b6b' opacity='0.8'/%3E%3Crect x='150' y='60' width='120' height='80' rx='8' fill='%23b8c0ff' opacity='0.7'/%3E%3Cpolygon points='330,60 380,100 330,140' fill='%2351cf66' opacity='0.6'/%3E%3Ctext x='200' y='180' text-anchor='middle' fill='%23888' font-size='12'%3EEvoGen Architecture%3C/text%3E%3C/svg%3E",
             "language": None,
             "session_id": None,
             "created_at": now,

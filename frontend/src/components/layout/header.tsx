@@ -18,7 +18,6 @@ const breadcrumbs: Record<string, string> = {
   '/settings': '设置',
   '/settings/models': '模型配置',
   '/settings/platforms': '平台管理',
-  '/settings/skills': '技能设置',
   '/settings/system': '系统状态',
 };
 

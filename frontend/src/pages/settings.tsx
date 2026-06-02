@@ -8,7 +8,6 @@ export function SettingsPage() {
   const tabs = [
     { path: '/settings/models', label: '模型' },
     { path: '/settings/platforms', label: '平台' },
-    { path: '/settings/skills', label: '技能' },
     { path: '/settings/system', label: '系统' },
   ];
 

@@ -25,7 +25,6 @@ import { ToolsPage } from '@/pages/tools';
 import { SettingsPage } from '@/pages/settings';
 import { SettingsModelsPage } from '@/pages/settings-models';
 import { SettingsPlatformsPage } from '@/pages/settings-platforms';
-import { SettingsSkillsPage } from '@/pages/settings-skills';
 import { SettingsSystemPage } from '@/pages/settings-system';
 
 const queryClient = new QueryClient({
@@ -93,7 +92,6 @@ function AppContent() {
           <Route index element={<Navigate to="models" replace />} />
           <Route path="models" element={<SettingsModelsPage />} />
           <Route path="platforms" element={<SettingsPlatformsPage />} />
-          <Route path="skills" element={<SettingsSkillsPage />} />
           <Route path="system" element={<SettingsSystemPage />} />
         </Route>
       </Route>

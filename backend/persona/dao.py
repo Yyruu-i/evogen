@@ -30,10 +30,11 @@ _KNOWN_KEYS: set = {
 
 
 class PersonaDAO:
-    """人格属性持久化 DAO — 无状态，每次调用从数据库读写."""
+    """人格属性持久化 DAO — 支持用户隔离."""
 
-    def __init__(self):
+    def __init__(self, user_id: str = "default"):
         self._db = get_db()
+        self._user_id = user_id
 
     # ── 序列化辅助 ──────────────────────────────────
 
@@ -66,11 +67,14 @@ class PersonaDAO:
     # ── CRUD ────────────────────────────────────────
 
     def get_all(self) -> Dict[str, Any]:
-        """读取所有属性，返回 {key: deserialized_value}.
+        """读取当前用户所有属性，返回 {key: deserialized_value}.
 
         始终返回所有已知 key，缺失的返回 None。
         """
-        cursor = self._db.execute("SELECT key, value_json FROM persona_attributes")
+        cursor = self._db.execute(
+            "SELECT key, value_json FROM persona_attributes WHERE user_id = ?",
+            (self._user_id,),
+        )
         rows = cursor.fetchall()
         result: Dict[str, Any] = {}
         for row in rows:
@@ -85,7 +89,8 @@ class PersonaDAO:
     def get(self, key: str) -> Any:
         """读取单个属性值."""
         cursor = self._db.execute(
-            "SELECT value_json FROM persona_attributes WHERE key = ?", (key,)
+            "SELECT value_json FROM persona_attributes WHERE user_id = ? AND key = ?",
+            (self._user_id, key),
         )
         row = cursor.fetchone()
         if row is None:
@@ -96,12 +101,12 @@ class PersonaDAO:
         """写入单个属性值（UPSERT）."""
         value_json = self._serialize(value)
         self._db.execute(
-            """INSERT INTO persona_attributes (key, value_json, updated_at)
-               VALUES (?, ?, datetime('now'))
-               ON CONFLICT(key) DO UPDATE SET
+            """INSERT INTO persona_attributes (user_id, key, value_json, updated_at)
+               VALUES (?, ?, ?, datetime('now'))
+               ON CONFLICT(user_id, key) DO UPDATE SET
                    value_json = excluded.value_json,
                    updated_at = excluded.updated_at""",
-            (key, value_json),
+            (self._user_id, key, value_json),
         )
         self._db.commit()
 
@@ -113,12 +118,12 @@ class PersonaDAO:
                 continue
             value_json = self._serialize(value)
             self._db.execute(
-                """INSERT INTO persona_attributes (key, value_json, updated_at)
-                   VALUES (?, ?, datetime('now'))
-                   ON CONFLICT(key) DO UPDATE SET
+                """INSERT INTO persona_attributes (user_id, key, value_json, updated_at)
+                   VALUES (?, ?, ?, datetime('now'))
+                   ON CONFLICT(user_id, key) DO UPDATE SET
                        value_json = excluded.value_json,
                        updated_at = excluded.updated_at""",
-                (key, value_json),
+                (self._user_id, key, value_json),
             )
         self._db.commit()
 

@@ -228,6 +228,7 @@ class TraceRecorder:
         turns: List[TrajectoryTurn],
         outcome: TaskOutcome,
         session_title: Optional[str] = None,
+        user_id: str = "default",
     ) -> str:
         """提交任务执行轨迹.
 
@@ -236,6 +237,7 @@ class TraceRecorder:
             turns: 轨迹轮次列表
             outcome: 任务结果
             session_title: 会话标题（可选）
+            user_id: 用户 ID
 
         Returns:
             轨迹 ID (UUID)
@@ -250,9 +252,9 @@ class TraceRecorder:
         # 写入 SQLite
         self._db.execute(
             """INSERT INTO experience_trajectories
-               (id, session_id, session_title, turns_json, outcome_json)
-               VALUES (?, ?, ?, ?, ?)""",
-            (trajectory_id, session_id, session_title, turns_json, outcome_json),
+               (id, session_id, session_title, turns_json, outcome_json, user_id)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (trajectory_id, session_id, session_title, turns_json, outcome_json, user_id),
         )
         self._db.commit()
 
@@ -281,6 +283,7 @@ class TraceRecorder:
         limit: int = 50,
         offset: int = 0,
         with_feedback_only: bool = False,
+        user_id: str = "default",
     ) -> List[TrajectorySummary]:
         """列出任务轨迹摘要.
 
@@ -288,6 +291,7 @@ class TraceRecorder:
             limit: 返回数量上限
             offset: 分页偏移
             with_feedback_only: 仅返回有反馈的轨迹
+            user_id: 用户 ID
 
         Returns:
             轨迹摘要列表
@@ -301,6 +305,7 @@ class TraceRecorder:
                     MAX(f.created_at) as last_feedback_at
                 FROM experience_trajectories t
                 INNER JOIN experience_feedback f ON f.trajectory_id = t.id
+                WHERE t.user_id = ?
                 GROUP BY t.id
                 ORDER BY t.created_at DESC
                 LIMIT ? OFFSET ?
@@ -314,12 +319,13 @@ class TraceRecorder:
                     MAX(f.created_at) as last_feedback_at
                 FROM experience_trajectories t
                 LEFT JOIN experience_feedback f ON f.trajectory_id = t.id
+                WHERE t.user_id = ?
                 GROUP BY t.id
                 ORDER BY t.created_at DESC
                 LIMIT ? OFFSET ?
             """
 
-        rows = self._db.execute(sql, (limit, offset)).fetchall()
+        rows = self._db.execute(sql, (user_id, limit, offset)).fetchall()
 
         summaries = []
         for row in rows:
@@ -432,32 +438,37 @@ class TraceRecorder:
         self,
         status: Optional[str] = None,
         limit: int = 50,
+        user_id: str = "default",
     ) -> List[FeedbackRecord]:
         """列出反馈记录.
 
         Args:
             status: 按状态筛选 (pending/reviewed/applied/dismissed)，None 返回全部
             limit: 返回数量上限
+            user_id: 用户 ID
 
         Returns:
             反馈记录列表
         """
         if status:
             rows = self._db.execute(
-                """SELECT id, trajectory_id, rating, note, status, created_at, reviewed_at
-                   FROM experience_feedback
-                   WHERE status = ?
-                   ORDER BY created_at DESC
+                """SELECT f.id, f.trajectory_id, f.rating, f.note, f.status, f.created_at, f.reviewed_at
+                   FROM experience_feedback f
+                   JOIN experience_trajectories t ON t.id = f.trajectory_id
+                   WHERE f.status = ? AND t.user_id = ?
+                   ORDER BY f.created_at DESC
                    LIMIT ?""",
-                (status, limit),
+                (status, user_id, limit),
             ).fetchall()
         else:
             rows = self._db.execute(
-                """SELECT id, trajectory_id, rating, note, status, created_at, reviewed_at
-                   FROM experience_feedback
-                   ORDER BY created_at DESC
+                """SELECT f.id, f.trajectory_id, f.rating, f.note, f.status, f.created_at, f.reviewed_at
+                   FROM experience_feedback f
+                   JOIN experience_trajectories t ON t.id = f.trajectory_id
+                   WHERE t.user_id = ?
+                   ORDER BY f.created_at DESC
                    LIMIT ?""",
-                (limit,),
+                (user_id, limit),
             ).fetchall()
 
         return [_row_to_feedback_record(r) for r in rows]

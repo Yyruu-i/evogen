@@ -1,14 +1,16 @@
 """记忆管理 REST API 端点（对齐设计文档第1335-1362行）.
 
 统一响应格式：{"ok": true, "data": {...}} 或 {"ok": false, "error": "..."}
+所有端点需要认证（Depends(get_current_user)）。
 """
 
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
+from backend.auth.dependencies import get_current_user
 from backend.memory.engine import EvoMemoryEngine, MemoryFact, MemoryStats, get_engine
 
 logger = logging.getLogger(__name__)
@@ -76,6 +78,7 @@ def _stats_to_dict(stats: MemoryStats) -> dict:
 
 @router.get("/facts")
 async def list_facts(
+    user_id: str = Depends(get_current_user),
     layer: Optional[str] = Query(None, description="按层级筛选: transient|working|core|all"),
     type: Optional[str] = Query(None, description="按类型筛选: preference|fact|procedure|relationship"),
     limit: int = Query(50, ge=1, le=500, description="每页数量"),
@@ -89,14 +92,14 @@ async def list_facts(
         if q:
             # 语义搜索模式：忽略 layer/type 筛选，直接向量检索
             top_k = min(limit, 50)
-            facts = engine.search_memories(q, top_k=top_k)
+            facts = engine.search_memories(q, top_k=top_k, user_id=user_id)
             # 手动分页
             total = len(facts)
             facts = facts[offset : offset + limit]
         else:
-            facts = engine.list_facts(layer=layer, type=type, limit=limit, offset=offset)
+            facts = engine.list_facts(layer=layer, type=type, limit=limit, offset=offset, user_id=user_id)
             # 获取总数（简化：用 list_facts 无分页查询）
-            all_facts = engine.list_facts(layer=layer, type=type, limit=10000, offset=0)
+            all_facts = engine.list_facts(layer=layer, type=type, limit=10000, offset=0, user_id=user_id)
             total = len(all_facts)
 
         return {
@@ -119,7 +122,7 @@ async def list_facts(
 
 
 @router.get("/facts/{fact_id}")
-async def get_fact(fact_id: str):
+async def get_fact(fact_id: str, user_id: str = Depends(get_current_user)):
     """获取单条记忆事实."""
     engine = _get_engine()
 
@@ -139,7 +142,7 @@ async def get_fact(fact_id: str):
 
 
 @router.post("/facts", status_code=201)
-async def create_fact(request: dict):
+async def create_fact(request: dict, user_id: str = Depends(get_current_user)):
     """手动添加记忆事实.
 
     Request body: {content, type, importance?, layer?, tags?, privacy_level?}
@@ -168,6 +171,7 @@ async def create_fact(request: dict):
             layer=request.get("layer", "working"),
             tags=request.get("tags", []),
             privacy_level=request.get("privacy_level", "private"),
+            user_id=user_id,
         )
         return {"ok": True, "data": _fact_to_dict(fact)}
     except Exception as e:

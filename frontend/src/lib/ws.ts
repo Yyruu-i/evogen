@@ -1,6 +1,7 @@
 /* ═══════════════════════════════════════════════════════════
    EvoGen — WebSocket manager
    Auto-reconnect, auto-auth, event dispatch.
+   Token is read dynamically from localStorage on connect.
    ═══════════════════════════════════════════════════════════ */
 
 import type { WsAgentEvent } from '@/types';
@@ -8,18 +9,24 @@ import type { WsAgentEvent } from '@/types';
 type MessageHandler = (event: WsAgentEvent) => void;
 type StatusHandler = (status: 'connecting' | 'connected' | 'disconnected') => void;
 
+function getToken(): string {
+  try {
+    return localStorage.getItem('evogen-auth-token') || '';
+  } catch {
+    return '';
+  }
+}
+
 export class EvoGenWS {
   private ws: WebSocket | null = null;
-  private token: string;
   private url: string;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private messageHandlers = new Set<MessageHandler>();
   private statusHandlers = new Set<StatusHandler>();
   private shouldReconnect = false;
 
-  constructor(url: string, token: string) {
+  constructor(url: string) {
     this.url = url;
-    this.token = token;
   }
 
   onMessage(handler: MessageHandler) {
@@ -41,7 +48,8 @@ export class EvoGenWS {
 
     this.ws.onopen = () => {
       this.emitStatus('connected');
-      // Send connect frame
+      // Send connect frame with auth token
+      const token = getToken();
       this.send({
         type: 'req',
         method: 'connect',
@@ -49,7 +57,7 @@ export class EvoGenWS {
           deviceId: `web-${crypto.randomUUID().slice(0, 8)}`,
           deviceName: 'EvoGen Web',
           platform: 'web',
-          auth: { token: this.token },
+          auth: { token },
           role: 'client',
         },
       });

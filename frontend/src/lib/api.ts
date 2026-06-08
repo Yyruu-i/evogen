@@ -1,25 +1,42 @@
 /* ═══════════════════════════════════════════════════════════
    EvoGen — REST API client
-   Auto-injects Bearer token for no-login dev mode.
+   Auto-injects Bearer token from localStorage auth store.
    ═══════════════════════════════════════════════════════════ */
 
-const DEFAULT_TOKEN = 'gateway-secret-token-change-me';
+const AUTH_TOKEN_KEY = 'evogen-auth-token';
 const BASE_URL = '/api/v1';
 
 function getToken(): string {
-  return sessionStorage.getItem('gateway_token') || DEFAULT_TOKEN;
+  try {
+    return localStorage.getItem(AUTH_TOKEN_KEY) || '';
+  } catch {
+    return '';
+  }
 }
 
 export function setToken(token: string) {
-  sessionStorage.setItem('gateway_token', token);
+  try {
+    localStorage.setItem(AUTH_TOKEN_KEY, token);
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
+export function clearToken() {
+  try {
+    localStorage.removeItem(AUTH_TOKEN_KEY);
+  } catch {
+    // localStorage may be unavailable
+  }
 }
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const token = getToken();
   const res = await fetch(`${BASE_URL}${path}`, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${getToken()}`,
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...options?.headers,
     },
   });
@@ -37,6 +54,38 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   }
   return json as T;
 }
+
+// ── Auth ────────────────────────────────────────────────────────
+interface AuthUser {
+  id: string;
+  username: string;
+  email: string;
+}
+
+interface AuthResponse {
+  token: string;
+  user: AuthUser;
+}
+
+export const authApi = {
+  async login(body: { username: string; password: string }): Promise<AuthResponse> {
+    return request<AuthResponse>('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
+  async register(body: { username: string; email: string; password: string }): Promise<AuthResponse> {
+    return request<AuthResponse>('/auth/register', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
+  async me(): Promise<AuthUser> {
+    return request<AuthUser>('/auth/me');
+  },
+};
 
 // ── Sessions ───────────────────────────────────────────────────
 export const sessionsApi = {
@@ -240,12 +289,13 @@ export function streamChat(
   const controller = new AbortController();
   const body: Record<string, unknown> = { message };
   if (sessionId) body.session = sessionId;
+  const token = getToken();
 
   fetch(`${BASE_URL}/agent/chat`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${getToken()}`,
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
     body: JSON.stringify(body),
     signal: controller.signal,

@@ -21,8 +21,8 @@ export function ThemeToggle() {
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     const stored = getStoredTheme();
     if (stored === 'dark' || stored === 'light') return stored;
-    // DEFAULT: dark mode
-    return 'dark';
+    // DEFAULT: light mode
+    return 'light';
   });
 
   useEffect(() => {

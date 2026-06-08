@@ -123,11 +123,12 @@ class PersonaEngine:
     """统一人格引擎 — 管理 agent 行为策略.
 
     方法签名对齐设计文档第592-615行，所有方法均为 async。
-    MVP 阶段：跨 profile 共享同一数据源。
+    每个用户独立数据源（通过 PersonaDAO(user_id=...) 隔离）。
     """
 
-    def __init__(self, dao: Optional[PersonaDAO] = None):
-        self._dao = dao or PersonaDAO()
+    def __init__(self, user_id: str = "default", dao: Optional[PersonaDAO] = None):
+        self._user_id = user_id
+        self._dao = dao or PersonaDAO(user_id=user_id)
 
     @property
     def dao(self) -> PersonaDAO:
@@ -309,20 +310,31 @@ class PersonaEngine:
         return full
 
 
-# ── 全局单例 ───────────────────────────────────────────
+# ── 全局实例池（per-user 隔离）─────────────────────
 
-_engine: Optional[PersonaEngine] = None
+import threading
 
-
-def get_engine() -> PersonaEngine:
-    """获取全局 PersonaEngine 单例."""
-    global _engine
-    if _engine is None:
-        _engine = PersonaEngine()
-    return _engine
+_engines: dict[str, PersonaEngine] = {}
+_lock = threading.Lock()
 
 
-def reset_engine():
-    """重置引擎单例（测试用）."""
-    global _engine
-    _engine = None
+def get_engine(user_id: str = "default") -> PersonaEngine:
+    """获取或创建 per-user PersonaEngine 实例."""
+    if user_id not in _engines:
+        with _lock:
+            if user_id not in _engines:
+                _engines[user_id] = PersonaEngine(user_id=user_id)
+    return _engines[user_id]
+
+
+def reset_engine(user_id: str = "default"):
+    """重置指定用户的引擎实例（测试用）."""
+    with _lock:
+        _engines.pop(user_id, None)
+
+
+def reset_all_engines():
+    """重置所有引擎实例（测试用）."""
+    global _engines
+    with _lock:
+        _engines.clear()

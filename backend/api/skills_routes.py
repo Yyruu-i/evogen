@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+
+from backend.auth.dependencies import get_current_user
 
 logger = logging.getLogger(__name__)
 
@@ -118,18 +120,36 @@ def _parse_skill_frontmatter(file_path: Path) -> Optional[dict]:
     }
 
 
-def _scan_skills() -> list[dict]:
-    """扫描所有 SKILL.md 文件，构建技能列表，按首次创建时间升序."""
+def _scan_skills(user_id: str = "default") -> list[dict]:
+    """扫描所有 SKILL.md 文件，构建技能列表，按首次创建时间升序.
+
+    合并内置技能（全局）和用户自定义技能（per-user 目录）。
+    """
     skills: list[dict] = []
 
-    # 收集所有 SKILL.md 路径（id → {path, mtime}），取最新 mtime
+    # 用户自定义技能目录
+    user_skills_dir = Path(os.path.expanduser(f"~/.hermes/skills/{user_id}"))
+
+    # 收集所有 SKILL.md 路径（id → {path, mtime, scope}），取最新 mtime
     skill_files: dict[str, dict] = {}
+    # 内置技能（全局）
     for skills_dir in _SKILLS_DIRS:
         for md_path in sorted(skills_dir.rglob("SKILL.md")):
+            # 跳过用户目录下的（处理方式不同）
+            if str(md_path).startswith(str(user_skills_dir)):
+                continue
             skill_id = md_path.parent.name
             mtime = md_path.stat().st_mtime
             if skill_id not in skill_files or mtime > skill_files[skill_id]["mtime"]:
-                skill_files[skill_id] = {"path": md_path, "mtime": mtime}
+                skill_files[skill_id] = {"path": md_path, "mtime": mtime, "scope": "builtin"}
+
+    # 用户自定义技能
+    if user_skills_dir.is_dir():
+        for md_path in sorted(user_skills_dir.rglob("SKILL.md")):
+            skill_id = md_path.parent.name
+            mtime = md_path.stat().st_mtime
+            # 用户技能覆盖同名内置技能
+            skill_files[skill_id] = {"path": md_path, "mtime": mtime, "scope": "user"}
 
     for skill_id, info in skill_files.items():
         md_path = info["path"]
@@ -150,6 +170,7 @@ def _scan_skills() -> list[dict]:
             "tags": fm["tags"],
             "category": category_label or fm["category"],
             "source": "local",
+            "scope": info.get("scope", "builtin"),
             "version": _version_int(fm.get("version", "1.0.0")),
             "use_count": 0,
             "success_rate": 0.0,
@@ -171,10 +192,10 @@ def _version_int(version_str: str) -> int:
 
 
 @router.get("")
-async def list_skills():
-    """获取所有技能列表（从 Hermes skills 目录实时扫描）."""
+async def list_skills(user_id: str = Depends(get_current_user)):
+    """获取所有技能列表（从 Hermes skills 目录实时扫描，合并内置+用户自定义）."""
     try:
-        skills = _scan_skills()
+        skills = _scan_skills(user_id=user_id)
     except Exception as e:
         logger.error(f"Failed to scan skills: {e}", exc_info=True)
         skills = []

@@ -148,6 +148,7 @@ class VectorStore:
         query: str,
         n_results: int = 5,
         where: Optional[dict] = None,
+        user_id: Optional[str] = None,
     ) -> list[dict]:
         """语义检索记忆.
 
@@ -155,6 +156,7 @@ class VectorStore:
             query: 查询文本
             n_results: 返回结果数
             where: Chroma metadata 过滤条件
+            user_id: 用户 ID 过滤（加入 where 条件）
 
         Returns:
             搜索结果列表，每项含 id, content, metadata, distance
@@ -162,10 +164,18 @@ class VectorStore:
         self._ensure_initialized()
         query_embedding = self._embedding_provider.embed_query(query)
 
+        # 合并 user_id 过滤（Chroma 多条件需用 $and）
+        final_where = dict(where or {})
+        if user_id:
+            if final_where:
+                final_where = {"$and": [{"user_id": user_id}, final_where]}
+            else:
+                final_where = {"user_id": user_id}
+
         results = self._memory_collection.query(
             query_embeddings=[query_embedding],
             n_results=n_results,
-            where=where,
+            where=final_where if final_where else None,
             include=["documents", "metadatas", "distances"],
         )
 
@@ -188,6 +198,7 @@ class VectorStore:
         text: str,
         n_results: int = 5,
         where: Optional[dict] = None,
+        user_id: Optional[str] = None,
     ) -> list[dict]:
         """用文档嵌入（无查询前缀）检索记忆，用于去重/合并场景.
 
@@ -198,6 +209,7 @@ class VectorStore:
             text: 文本（不添加查询前缀）
             n_results: 返回结果数
             where: Chroma metadata 过滤条件
+            user_id: 用户 ID 过滤
 
         Returns:
             搜索结果列表，每项含 id, content, metadata, distance
@@ -205,10 +217,18 @@ class VectorStore:
         self._ensure_initialized()
         doc_embedding = self._embedding_provider.embed(text)
 
+        # 合并 user_id 过滤（Chroma 多条件需用 $and）
+        final_where = dict(where or {})
+        if user_id:
+            if final_where:
+                final_where = {"$and": [{"user_id": user_id}, final_where]}
+            else:
+                final_where = {"user_id": user_id}
+
         results = self._memory_collection.query(
             query_embeddings=[doc_embedding],
             n_results=n_results,
-            where=where,
+            where=final_where if final_where else None,
             include=["documents", "metadatas", "distances"],
         )
 

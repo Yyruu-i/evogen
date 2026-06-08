@@ -76,12 +76,10 @@ export function LandingPage({ onEnter }: { onEnter: () => void }) {
   }, [handleKeyDown]);
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col items-center justify-center overflow-hidden"      style={{
-        background: 'radial-gradient(ellipse 60% 50% at 50% 30%, rgba(20,20,60,0.9) 0%, rgba(5,5,15,0.98) 50%, #05050f 100%)',
-      }}>
-      {/* Scanline overlay */}
-      <div className="scanline" />
-
+    <div
+      className="fixed inset-0 z-50 flex flex-col items-center justify-center overflow-hidden"
+      style={{ background: 'var(--color-bg-deep)' }}
+    >
       {/* Animated grid particles layer — already in CSS body::before */}
 
       {/* Floating orbs */}

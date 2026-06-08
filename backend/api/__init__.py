@@ -8,6 +8,7 @@ from backend.api.persona_routes import router as persona_router
 from backend.api.chat_routes import router as chat_router
 from backend.api.skills_routes import router as skills_router
 from backend.api.sessions_routes import router as sessions_router
+from backend.api.auth_routes import router as auth_router
 
 from backend.api.artifacts_routes import router as artifacts_router
 from backend.api.tools_routes import router as tools_router
@@ -29,5 +30,6 @@ router.include_router(tools_router)
 router.include_router(resource_router)
 router.include_router(system_router)
 router.include_router(browser_router)
+router.include_router(auth_router)
 
 __all__ = ["router"]

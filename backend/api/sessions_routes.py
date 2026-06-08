@@ -3,8 +3,9 @@
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 
+from backend.auth.dependencies import get_current_user
 from backend.db.connection import get_db
 
 logger = logging.getLogger(__name__)
@@ -46,21 +47,22 @@ async def list_sessions(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     source: Optional[str] = None,
+    user_id: str = Depends(get_current_user),
 ):
     """获取会话列表（按更新时间倒序）."""
     db = get_db()
     if source:
         rows = db.execute(
-            "SELECT * FROM sessions WHERE source=? ORDER BY updated_at DESC LIMIT ? OFFSET ?",
-            (source, limit, offset),
+            "SELECT * FROM sessions WHERE user_id=? AND source=? ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+            (user_id, source, limit, offset),
         ).fetchall()
-        total = db.execute("SELECT COUNT(*) as cnt FROM sessions WHERE source=?", (source,)).fetchone()["cnt"]
+        total = db.execute("SELECT COUNT(*) as cnt FROM sessions WHERE user_id=? AND source=?", (user_id, source,)).fetchone()["cnt"]
     else:
         rows = db.execute(
-            "SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ? OFFSET ?",
-            (limit, offset),
+            "SELECT * FROM sessions WHERE user_id=? ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+            (user_id, limit, offset),
         ).fetchall()
-        total = db.execute("SELECT COUNT(*) as cnt FROM sessions").fetchone()["cnt"]
+        total = db.execute("SELECT COUNT(*) as cnt FROM sessions WHERE user_id=?", (user_id,)).fetchone()["cnt"]
 
     return {
         "ok": True,
@@ -72,21 +74,21 @@ async def list_sessions(
 
 
 @router.get("/{session_id}")
-async def get_session(session_id: str):
+async def get_session(session_id: str, user_id: str = Depends(get_current_user)):
     """获取单个会话详情."""
     db = get_db()
-    row = db.execute("SELECT * FROM sessions WHERE id=?", (session_id,)).fetchone()
+    row = db.execute("SELECT * FROM sessions WHERE id=? AND user_id=?", (session_id, user_id)).fetchone()
     if not row:
         return {"ok": False, "error": "Session not found"}
     return {"ok": True, "data": _row_to_session(row)}
 
 
 @router.delete("/{session_id}")
-async def delete_session(session_id: str):
+async def delete_session(session_id: str, user_id: str = Depends(get_current_user)):
     """删除会话及其消息."""
     db = get_db()
     db.execute("DELETE FROM messages WHERE session_id=?", (session_id,))
-    db.execute("DELETE FROM sessions WHERE id=?", (session_id,))
+    db.execute("DELETE FROM sessions WHERE id=? AND user_id=?", (session_id, user_id))
     db.commit()
     return {"ok": True, "data": {"deleted_id": session_id}}
 
@@ -96,9 +98,14 @@ async def list_messages(
     session_id: str,
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
+    user_id: str = Depends(get_current_user),
 ):
     """获取会话消息列表."""
     db = get_db()
+    # Verify session belongs to user
+    session = db.execute("SELECT 1 FROM sessions WHERE id=? AND user_id=?", (session_id, user_id)).fetchone()
+    if not session:
+        return {"ok": False, "error": "Session not found"}
     rows = db.execute(
         "SELECT * FROM messages WHERE session_id=? ORDER BY id ASC LIMIT ? OFFSET ?",
         (session_id, limit, offset),
@@ -112,12 +119,12 @@ async def list_messages(
 
 
 @router.post("/search")
-async def search_sessions(query: str, limit: int = Query(20, ge=1, le=100)):
+async def search_sessions(query: str, limit: int = Query(20, ge=1, le=100), user_id: str = Depends(get_current_user)):
     """搜索会话（标题模糊匹配）."""
     db = get_db()
     rows = db.execute(
-        "SELECT * FROM sessions WHERE title LIKE ? ORDER BY updated_at DESC LIMIT ?",
-        (f"%{query}%", limit),
+        "SELECT * FROM sessions WHERE user_id=? AND title LIKE ? ORDER BY updated_at DESC LIMIT ?",
+        (user_id, f"%{query}%", limit),
     ).fetchall()
     return {
         "ok": True,

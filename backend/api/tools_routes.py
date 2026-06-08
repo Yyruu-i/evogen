@@ -5,8 +5,10 @@ import logging
 import subprocess
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+
+from backend.auth.dependencies import get_current_user
 
 logger = logging.getLogger(__name__)
 
@@ -88,11 +90,11 @@ def _static_tool_list() -> list[dict]:
 
 # ── In-memory tool storage ──
 _tool_counts: dict[str, int] = {}
-_custom_tools: list[dict] = []
+_custom_tools: dict[str, list[dict]] = {}  # user_id -> tools
 
 
 @router.get("")
-async def list_tools(toolset: Optional[str] = None):
+async def list_tools(toolset: Optional[str] = None, user_id: str = Depends(get_current_user)):
     """获取所有可用工具列表."""
     try:
         base_tools = _list_hermes_tools()
@@ -101,9 +103,10 @@ async def list_tools(toolset: Optional[str] = None):
         base_tools = []
 
     # Merge custom tools (dedup by name)
+    user_tools = _custom_tools.get(user_id, [])
     base_names = {t["name"] for t in base_tools}
     merged = list(base_tools)
-    for ct in _custom_tools:
+    for ct in user_tools:
         if ct["name"] not in base_names:
             merged.append(ct)
 
@@ -125,7 +128,8 @@ async def list_tools(toolset: Optional[str] = None):
 
 
 @router.post("")
-async def add_tool(tool: dict):
+@router.post("")
+async def add_tool(tool: dict, user_id: str = Depends(get_current_user)):
     """注册新工具."""
     name = tool.get("name", "").strip()
     if not name:
@@ -142,19 +146,19 @@ async def add_tool(tool: dict):
         "enabled": True,
     }
 
-    # Remove existing custom tool with same name
-    global _custom_tools
-    _custom_tools = [t for t in _custom_tools if t["name"] != name]
-    _custom_tools.append(entry)
+    # Remove existing custom tool with same name (per-user)
+    user_tools = _custom_tools.setdefault(user_id, [])
+    user_tools[:] = [t for t in user_tools if t["name"] != name]
+    user_tools.append(entry)
     _tool_counts[name] = 0
 
     return {"ok": True, "data": entry}
 
 
 @router.delete("/{name}")
-async def delete_tool(name: str):
+async def delete_tool(name: str, user_id: str = Depends(get_current_user)):
     """删除工具."""
-    global _custom_tools
-    _custom_tools = [t for t in _custom_tools if t["name"] != name]
+    user_tools = _custom_tools.get(user_id, [])
+    user_tools[:] = [t for t in user_tools if t["name"] != name]
     _tool_counts.pop(name, None)
     return {"ok": True}

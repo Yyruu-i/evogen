@@ -1,12 +1,14 @@
 """T-04-04 人格 REST API 端点（对齐设计文档第1387-1410行）.
 
 统一响应格式：{"ok": true, "data": {...}} 或 {"ok": false, "error": "..."}
+所有端点需要认证（Depends(get_current_user)）。
 """
 
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from backend.auth.dependencies import get_current_user
 from backend.persona.engine import PersonaEngine, get_engine
 
 logger = logging.getLogger(__name__)
@@ -19,9 +21,9 @@ router = APIRouter(prefix="/persona", tags=["persona"])
 # ════════════════════════════════════════════════════════
 
 
-def _get_engine() -> PersonaEngine:
-    """获取全局引擎实例（测试时可 monkeypatch）."""
-    return get_engine()
+def _get_engine(user_id: str = "default") -> PersonaEngine:
+    """获取 per-user 引擎实例（测试时可 monkeypatch）."""
+    return get_engine(user_id=user_id)
 
 
 def _persona_to_dict(persona) -> dict:
@@ -36,12 +38,12 @@ def _persona_to_dict(persona) -> dict:
 
 
 @router.get("/attributes")
-async def get_attributes():
-    """获取所有当前人格属性.
+async def get_attributes(user_id: str = Depends(get_current_user)):
+    """获取所有当前人格属性（需要认证）.
 
     响应：{"ok": true, "data": {"attributes": {...}}}
     """
-    engine = _get_engine()
+    engine = _get_engine(user_id)
     try:
         attrs = await engine.get_attributes()
         return {"ok": True, "data": {"attributes": attrs}}
@@ -56,13 +58,13 @@ async def get_attributes():
 
 
 @router.put("/attributes")
-async def set_attributes_batch(request: dict):
-    """批量更新人格属性.
+async def set_attributes_batch(request: dict, user_id: str = Depends(get_current_user)):
+    """批量更新人格属性（需要认证）.
 
     请求体：{key: value, ...}（扁平 JSON 对象）
     响应：{"ok": true, "data": {"attributes": {...}}}
     """
-    engine = _get_engine()
+    engine = _get_engine(user_id)
     try:
         # 过滤掉辅助字段
         attrs = {k: v for k, v in request.items() if not k.startswith("_")}
@@ -90,13 +92,13 @@ async def set_attributes_batch(request: dict):
 
 
 @router.put("/attributes/{key}")
-async def update_attribute(key: str, request: dict):
-    """更新单个属性.
+async def update_attribute(key: str, request: dict, user_id: str = Depends(get_current_user)):
+    """更新单个属性（需要认证）.
 
     请求体：{"value": any}
     响应：{"ok": true, "data": {"key": "...", "value": ...}}
     """
-    engine = _get_engine()
+    engine = _get_engine(user_id)
     try:
         value = request.get("value")
         # 支持 value 为 None / 0 / False 的情况
@@ -134,12 +136,12 @@ async def update_attribute(key: str, request: dict):
 
 
 @router.get("/export")
-async def export_persona():
-    """导出人格配置为 JSON 字符串.
+async def export_persona(user_id: str = Depends(get_current_user)):
+    """导出人格配置为 JSON 字符串（需要认证）.
 
     响应：{"ok": true, "data": {"json": "..."}}
     """
-    engine = _get_engine()
+    engine = _get_engine(user_id)
     try:
         json_str = await engine.export_persona()
         return {"ok": True, "data": {"json": json_str}}
@@ -154,13 +156,13 @@ async def export_persona():
 
 
 @router.post("/import")
-async def import_persona(request: dict):
-    """从 JSON 导入人格配置.
+async def import_persona(request: dict, user_id: str = Depends(get_current_user)):
+    """从 JSON 导入人格配置（需要认证）.
 
     请求体：{"json_str": "..."}
     响应：{"ok": true, "data": {"attributes": {...}}}
     """
-    engine = _get_engine()
+    engine = _get_engine(user_id)
     try:
         json_str = request.get("json_str")
         if not json_str:
@@ -195,12 +197,12 @@ async def import_persona(request: dict):
 
 
 @router.get("/preview-prompt")
-async def preview_prompt():
-    """预览当前人格的 System Prompt 注入片段.
+async def preview_prompt(user_id: str = Depends(get_current_user)):
+    """预览当前人格的 System Prompt 注入片段（需要认证）.
 
     响应：{"ok": true, "data": {"prompt_injection": "..."}}
     """
-    engine = _get_engine()
+    engine = _get_engine(user_id)
     try:
         prompt = await engine.get_prompt_injection()
         return {"ok": True, "data": {"prompt_injection": prompt}}

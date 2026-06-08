@@ -11,9 +11,11 @@ import uuid
 from datetime import datetime, timezone
 
 import httpx
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+
+from backend.auth.dependencies import get_current_user
 
 # 联网搜索模块
 from backend.api.web_search import (
@@ -692,7 +694,7 @@ async def _llm_stream_generator(message: str, session_id: str):
 
 
 @router.post("/chat")
-async def chat_sse(request: ChatRequest):
+async def agent_chat(request: ChatRequest, req: Request, user_id: str = Depends(get_current_user)):
     """SSE 流式对话端点."""
     return StreamingResponse(
         _llm_stream_generator(request.message, request.session),

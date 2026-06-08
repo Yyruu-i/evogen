@@ -5,8 +5,10 @@ import re
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
+
+from backend.auth.dependencies import get_current_user
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +34,7 @@ class ArtifactListResponse(BaseModel):
 
 # ── In-memory store (later → SQLite) ────────────────────────────
 
-_artifacts: list[dict] = []
+_artifacts: dict[str, list[dict]] = {}  # user_id -> artifacts
 
 
 def _next_artifact_id() -> str:
@@ -47,6 +49,7 @@ def store_artifact(
     *,
     language: str | None = None,
     session_id: str | None = None,
+    user_id: str = "default",
 ) -> str:
     """写入制品到内存存储，返回 artifact id.
 
@@ -61,9 +64,11 @@ def store_artifact(
         "content": content,
         "language": language,
         "session_id": session_id,
+        "user_id": user_id,
         "created_at": now,
     }
-    _artifacts.append(entry)
+    user_artifacts = _artifacts.setdefault(user_id, [])
+    user_artifacts.append(entry)
     logger.info(
         "Artifact stored: %s type=%s session=%s title=%s",
         artifact_id, artifact_type, session_id, title,
@@ -176,11 +181,10 @@ def _artifact_title_from_code(code: str, language: str) -> str:
 
 def _seed_demo():
     """种子数据：模拟对话产出的制品."""
-    global _artifacts
     if _artifacts:
         return
     now = datetime.now(timezone.utc).isoformat()
-    _artifacts = [
+    _artifacts["default"] = [
         {
             "id": "a1",
             "type": "code",
@@ -216,6 +220,7 @@ def _seed_demo():
             "language": None,
             "session_id": None,
             "created_at": now,
+            "user_id": "default",
         },
     ]
 
@@ -231,9 +236,10 @@ async def list_artifacts(
     session_id: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    user_id: str = Depends(get_current_user),
 ):
     """列出所有制品."""
-    filtered = _artifacts
+    filtered = _artifacts.get(user_id, [])
     if type:
         filtered = [a for a in filtered if a["type"] == type]
     if session_id:
@@ -263,9 +269,9 @@ async def list_artifacts(
 
 
 @router.get("/{artifact_id}")
-async def get_artifact(artifact_id: str):
+async def get_artifact(artifact_id: str, user_id: str = Depends(get_current_user)):
     """获取单个制品详情."""
-    for a in _artifacts:
+    for a in _artifacts.get(user_id, []):
         if a["id"] == artifact_id:
             return {
                 "ok": True,
@@ -283,12 +289,12 @@ async def get_artifact(artifact_id: str):
 
 
 @router.delete("/{artifact_id}")
-async def delete_artifact(artifact_id: str):
+async def delete_artifact(artifact_id: str, user_id: str = Depends(get_current_user)):
     """删除制品."""
-    global _artifacts
-    for i, a in enumerate(_artifacts):
+    user_artifacts = _artifacts.get(user_id, [])
+    for i, a in enumerate(user_artifacts):
         if a["id"] == artifact_id:
-            deleted = _artifacts.pop(i)
+            deleted = user_artifacts.pop(i)
             logger.info("Artifact deleted: %s type=%s title=%s", artifact_id, deleted["type"], deleted["title"])
             return {"ok": True, "data": {"deleted": artifact_id}}
     return {"ok": False, "error": "Artifact not found"}

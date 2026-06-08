@@ -15,9 +15,11 @@ import {
   Layers,
   Cpu,
   Zap,
+  LogOut,
 } from 'lucide-react';
 import { ThemeToggle } from '@/components/shared/theme-toggle';
 import { useSessions } from '@/hooks/use-sessions';
+import { useAuth } from '@/context/auth-context';
 import { cn } from '@/lib/utils';
 
 /* ── DeerFlow-style navigation sections ───────────────────────── */
@@ -30,6 +32,7 @@ interface NavSection {
 
 export function Sidebar() {
   const navigate = useNavigate();
+  const auth = useAuth();
   const { data } = useSessions({ limit: 30 });
   const sessions = data?.sessions || [];
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
@@ -96,11 +99,11 @@ export function Sidebar() {
       {/* ── Brand header ──────────────────────────────────────── */}
       <div className="flex shrink-0 items-center h-14 px-3">
         <button
-          className="flex items-center gap-2.5 px-2 py-1.5 rounded-xl hover:bg-hover transition-colors w-full group"
+          className="flex items-center gap-2.5 px-2 py-1.5 rounded-xl hover:bg-hover transition-all duration-200 w-full group"
           onClick={() => navigate('/chat')}
         >
           <div
-          className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 transition-shadow group-hover:shadow-[0_0_12px_rgba(255,107,107,0.2)]"
+          className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 transition-all duration-200 group-hover:shadow-[0_0_16px_rgba(255,107,107,0.25)] group-hover:scale-105"
           style={{ background: 'rgba(255,107,107,0.12)' }}
           >
             <Sparkles className="w-4 h-4" style={{ color: 'var(--color-accent)' }} />
@@ -115,32 +118,32 @@ export function Sidebar() {
       <div className="mx-3 h-px shrink-0" style={{ background: 'var(--color-border-glass)' }} />
 
       {/* ── Navigation sections (collapsible) ──────────────────── */}
-      <nav className="flex shrink-0 flex-col gap-0.5 p-2 overflow-y-auto">
+      <nav className="flex shrink-0 flex-col gap-1 p-2 overflow-y-auto custom-scrollbar">
         {sections.map((section) => {
           const SectionIcon = section.icon;
           const expanded = expandedSections[section.id];
           return (
-            <div key={section.id}>
+            <div key={section.id} className="mb-0.5">
               {/* Section header */}
               <button
                 onClick={() => toggleSection(section.id)}
-                className="flex items-center w-full h-8 px-2.5 rounded-lg text-[11px] font-semibold uppercase tracking-wider transition-colors hover:bg-hover"
+                className="flex items-center w-full h-8 px-2.5 rounded-lg text-[11px] font-semibold uppercase tracking-wider transition-all duration-200 hover:bg-[var(--color-bg-hover)] hover:text-primary"
                 style={{ color: 'var(--color-text-muted)' }}
               >
                 <SectionIcon className="w-3.5 h-3.5 mr-2" />
                 <span className="flex-1 text-left">{section.label}</span>
                 {expanded ? (
-                  <ChevronDown className="w-3 h-3" />
+                  <ChevronDown className="w-3 h-3 transition-transform duration-200" />
                 ) : (
-                  <ChevronRight className="w-3 h-3" />
+                  <ChevronRight className="w-3 h-3 transition-transform duration-200" />
                 )}
               </button>
 
               {/* Section items */}
               <div
                 className={cn(
-                  'overflow-hidden transition-all duration-300',
-                  expanded ? 'max-h-40 opacity-100' : 'max-h-0 opacity-0',
+                  'overflow-hidden transition-all duration-300 ease-out',
+                  expanded ? 'max-h-56 opacity-100 mt-0.5' : 'max-h-0 opacity-0',
                 )}
               >
                 {section.items.map((item) => {
@@ -154,8 +157,8 @@ export function Sidebar() {
                         cn(
                           'flex items-center h-9 rounded-lg transition-all duration-200 w-full gap-2.5 px-2.5 ml-4',
                           isActive
-                            ? 'text-primary'
-                            : 'text-secondary hover:text-primary hover:bg-hover',
+                            ? 'text-primary font-medium'
+                            : 'text-secondary hover:text-primary hover:bg-[var(--color-bg-hover)]',
                         )
                       }
                       style={({ isActive }) =>
@@ -163,6 +166,7 @@ export function Sidebar() {
                           ? {
                               background: 'rgba(255,107,107,0.08)',
                               borderLeft: '2px solid var(--color-accent)',
+                              boxShadow: 'inset 0 0 0 1px rgba(255,107,107,0.06)',
                             }
                           : { borderLeft: '2px solid transparent' }
                       }
@@ -170,7 +174,7 @@ export function Sidebar() {
                       <div className="flex size-7 shrink-0 items-center justify-center rounded-md">
                         <Icon style={{ width: 16, height: 16 }} />
                       </div>
-                      <span className="text-[12px] font-medium truncate flex-1 min-w-0 text-left">
+                      <span className="text-[12px] truncate flex-1 min-w-0 text-left">
                         {item.label}
                       </span>
                       {item.badge && (
@@ -194,7 +198,7 @@ export function Sidebar() {
       </nav>
 
       {/* ── Separator ─────────────────────────────────────────── */}
-      <div className="mx-3 h-px shrink-0" style={{ background: 'var(--color-border-glass)' }} />
+      <div className="mx-3 h-px shrink-0 my-1" style={{ background: 'var(--color-border-glass)' }} />
 
       {/* ── Recent conversations ───────────────────────────────── */}
       <div className="flex flex-col min-h-0 flex-1 transition-opacity duration-300 opacity-100">
@@ -204,13 +208,7 @@ export function Sidebar() {
           </span>
         </div>
 
-        <div
-          className="flex flex-col flex-1 min-h-0 overflow-y-auto pl-2 pr-0.5"
-          style={{
-            scrollbarWidth: 'thin',
-            scrollbarColor: 'transparent transparent',
-          }}
-        >
+        <div className="flex flex-col flex-1 min-h-0 overflow-y-auto pl-2 pr-0.5 custom-scrollbar">
           <div className="flex flex-col flex-1 gap-0.5">
             {sessions.length === 0 ? (
               <div
@@ -227,13 +225,14 @@ export function Sidebar() {
                 <button
                   key={s.id}
                   onClick={() => navigate(`/chat?session=${s.id}`)}
-                  className="group/item flex items-center h-9 w-full rounded-lg transition-all duration-200 cursor-pointer hover:bg-hover px-2.5 gap-2.5"
+                  title={s.title || '新对话'}
+                  className="group/item flex items-center h-9 w-full rounded-lg transition-all duration-200 cursor-pointer hover:bg-[var(--color-bg-hover)] active:scale-[0.98] px-2.5 gap-2.5"
                 >
-                  <div className="flex size-7 shrink-0 items-center justify-center">
+                  <div className="flex size-7 shrink-0 items-center justify-center transition-transform duration-200 group-hover/item:scale-110">
                     <MessageSquare className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
                   </div>
                   <span
-                    className="text-[12px] font-medium truncate flex-1 min-w-0 text-left"
+                    className="text-[12px] font-medium truncate flex-1 min-w-0 text-left group-hover/item:text-primary transition-colors duration-200"
                     style={{ color: 'var(--color-text-secondary)' }}
                   >
                     {s.title || '新对话'}
@@ -250,31 +249,62 @@ export function Sidebar() {
         className="shrink-0 flex items-center justify-between px-3 py-3"
         style={{ borderTop: '1px solid var(--color-border-glass)' }}
       >
-        <div className="flex items-center gap-2">
-          <span className="relative flex h-2 w-2">
-            <span
-              className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75"
-              style={{ background: 'var(--color-mint)' }}
-            />
-            <span
-              className="relative inline-flex rounded-full h-2 w-2"
-              style={{ background: 'var(--color-mint)' }}
-            />
-          </span>
-          <span className="text-[10px] font-mono tracking-wider" style={{ color: 'var(--color-text-muted)' }}>
-            v1.0
-          </span>
-          <span
-            className="text-[10px] px-1.5 py-0.5 rounded font-mono"
-            style={{
-              background: 'rgba(0,255,136,0.08)',
-              color: 'var(--color-mint)',
-            }}
-          >
-            LIVE
-          </span>
+        <div className="flex items-center gap-2 min-w-0 flex-1">
+          {auth.user ? (
+            <>
+              <div
+                className="w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0"
+                style={{ background: 'var(--color-accent)' }}
+              >
+                <span className="text-[10px] font-bold text-white">
+                  {auth.user.username.charAt(0).toUpperCase()}
+                </span>
+              </div>
+              <span
+                className="text-[11px] font-medium truncate"
+                style={{ color: 'var(--color-text-secondary)' }}
+                title={auth.user.username}
+              >
+                {auth.user.username}
+              </span>
+            </>
+          ) : (
+            <>
+              <span className="relative flex h-2 w-2">
+                <span
+                  className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75"
+                  style={{ background: 'var(--color-mint)' }}
+                />
+                <span
+                  className="relative inline-flex rounded-full h-2 w-2"
+                  style={{ background: 'var(--color-mint)' }}
+                />
+              </span>
+              <span className="text-[10px] font-mono tracking-wider" style={{ color: 'var(--color-text-muted)' }}>
+                v1.0
+              </span>
+              <span
+                className="text-[10px] px-1.5 py-0.5 rounded font-mono"
+                style={{
+                  background: 'rgba(0,255,136,0.08)',
+                  color: 'var(--color-mint)',
+                }}
+              >
+                LIVE
+              </span>
+            </>
+          )}
         </div>
-        <ThemeToggle />
+        <div className="flex items-center gap-1 flex-shrink-0">
+          <ThemeToggle />
+          <button
+            onClick={() => { auth.logout(); navigate('/login'); }}
+            className="theme-toggle"
+            title="登出"
+          >
+            <LogOut style={{ width: 14, height: 14 }} />
+          </button>
+        </div>
       </div>
     </aside>
   );

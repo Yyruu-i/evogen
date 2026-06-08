@@ -1,4 +1,5 @@
 import { useLocation } from 'react-router-dom';
+import { useAuth } from '@/context/auth-context';
 
 const breadcrumbs: Record<string, string> = {
   '/chat': '对话',
@@ -23,6 +24,7 @@ const breadcrumbs: Record<string, string> = {
 
 export function Header() {
   const { pathname } = useLocation();
+  const { user } = useAuth();
 
   const segments = pathname.split('/').filter(Boolean);
   let label = '对话';
@@ -41,7 +43,7 @@ export function Header() {
 
   return (
     <header
-      className="h-14 flex items-center px-8 flex-shrink-0"
+      className="h-14 flex items-center justify-between px-8 flex-shrink-0"
       style={{
         background: 'var(--color-bg-glass)',
         backdropFilter: 'blur(24px) saturate(180%)',
@@ -50,6 +52,23 @@ export function Header() {
       }}
     >
       <span className="text-[14px] font-medium text-secondary tracking-tight">{label}</span>
+
+      {/* User info on the right */}
+      {user && (
+        <div className="flex items-center gap-2">
+          <div
+            className="w-6 h-6 rounded-full flex items-center justify-center"
+            style={{ background: 'var(--color-accent)' }}
+          >
+            <span className="text-[10px] font-bold text-white">
+              {user.username.charAt(0).toUpperCase()}
+            </span>
+          </div>
+          <span className="text-[12px] font-medium text-secondary">
+            {user.username}
+          </span>
+        </div>
+      )}
     </header>
   );
 }

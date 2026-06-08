@@ -1,9 +1,12 @@
 import { useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { AuthProvider, useAuth } from '@/context/auth-context';
 import { ChatProvider } from '@/context/chat-context';
 import { AppLayout } from '@/components/layout/app-layout';
 import { LandingPage } from '@/pages/landing';
+import { LoginPage } from '@/pages/login';
+import { RegisterPage } from '@/pages/register';
 import { ChatPage } from '@/pages/chat';
 import { MemoryPage } from '@/pages/memory';
 import { MemoryListPage } from '@/pages/memory-list';
@@ -36,16 +39,41 @@ const queryClient = new QueryClient({
   },
 });
 
-function AppContent() {
-  const [landed, setLanded] = useState(false);
+/* ── Route guard: redirect to /login if not authenticated ────── */
+function RequireAuth({ children }: { children: React.ReactNode }) {
+  const { isAuthenticated } = useAuth();
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace />;
+  }
+  return <>{children}</>;
+}
+
+/* ── Landing / auth routing ──────────────────────────────────── */
+function AppRoutes() {
+  const { isAuthenticated } = useAuth();
+  const [landed, setLanded] = useState(() => {
+    // Skip landing if already logged in
+    return isAuthenticated;
+  });
 
   if (!landed) {
     return <LandingPage onEnter={() => setLanded(true)} />;
   }
 
+  // If not authenticated after landing, show auth pages
+  if (!isAuthenticated) {
+    return (
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/register" element={<RegisterPage />} />
+        <Route path="*" element={<Navigate to="/login" replace />} />
+      </Routes>
+    );
+  }
+
   return (
     <Routes>
-      <Route element={<ChatProvider><AppLayout /></ChatProvider>}>
+      <Route element={<RequireAuth><ChatProvider><AppLayout /></ChatProvider></RequireAuth>}>
         <Route index element={<Navigate to="/chat" replace />} />
 
         {/* Chat */}
@@ -96,6 +124,14 @@ function AppContent() {
         </Route>
       </Route>
     </Routes>
+  );
+}
+
+function AppContent() {
+  return (
+    <AuthProvider>
+      <AppRoutes />
+    </AuthProvider>
   );
 }
 

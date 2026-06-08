@@ -6,8 +6,10 @@
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
+
+from backend.auth.dependencies import get_current_user
 
 from backend.experience.recorder import (
     TraceRecorder,
@@ -164,6 +166,7 @@ async def list_trajectories(
     offset: int = Query(0, ge=0, description="偏移量"),
     with_feedback_only: bool = Query(False, description="仅返回有反馈的轨迹"),
     success: Optional[bool] = Query(None, description="按任务成功/失败筛选"),
+    user_id: str = Depends(get_current_user),
 ):
     """列出经验轨迹摘要.
 
@@ -183,6 +186,7 @@ async def list_trajectories(
             limit=fetch_limit,
             offset=offset,
             with_feedback_only=with_feedback_only,
+            user_id=user_id,
         )
 
         # 手动按 success 过滤
@@ -196,6 +200,7 @@ async def list_trajectories(
             all_summaries = recorder.list_trajectories(
                 limit=10000, offset=0,
                 with_feedback_only=with_feedback_only,
+                user_id=user_id,
             )
             total = len(all_summaries)
 
@@ -218,7 +223,7 @@ async def list_trajectories(
 # ════════════════════════════════════════════════════════
 
 @router.get("/trajectories/{trajectory_id}")
-async def get_trajectory(trajectory_id: str):
+async def get_trajectory(trajectory_id: str, user_id: str = Depends(get_current_user)):
     """获取单条轨迹详情，包含完整 turns + outcome + feedback."""
     recorder = _get_recorder()
 
@@ -246,6 +251,7 @@ async def list_feedback(
     status: Optional[str] = Query(None, description="按状态筛选: pending/reviewed/applied/dismissed"),
     limit: int = Query(50, ge=1, le=500, description="每页数量"),
     offset: int = Query(0, ge=0, description="偏移量"),
+    user_id: str = Depends(get_current_user),
 ):
     """列出反馈记录，支持按状态筛选和分页."""
     recorder = _get_recorder()
@@ -254,7 +260,7 @@ async def list_feedback(
         # TraceRecorder.list_feedback 不原生支持 offset，
         # 多取一些后手动切片。
         fetch_limit = min(limit + offset, 500)
-        feedback_list = recorder.list_feedback(status=status, limit=fetch_limit)
+        feedback_list = recorder.list_feedback(status=status, limit=fetch_limit, user_id=user_id)
 
         total = len(feedback_list)
         feedback_list = feedback_list[offset : offset + limit]
@@ -304,7 +310,7 @@ async def add_feedback(request: AddFeedbackRequest):
 # ════════════════════════════════════════════════════════
 
 @router.put("/feedback/{feedback_id}/status")
-async def update_feedback_status(feedback_id: str, request: UpdateFeedbackStatusRequest):
+async def update_feedback_status(feedback_id: str, request: UpdateFeedbackStatusRequest, user_id: str = Depends(get_current_user)):
     """更新反馈状态.
 
     Request body: {status: "reviewed"|"applied"|"dismissed"}
@@ -318,7 +324,7 @@ async def update_feedback_status(feedback_id: str, request: UpdateFeedbackStatus
 
         # update_feedback_status 不返回更新后的记录，需再次查询
         # 从全部反馈中查找（最多查 500 条）
-        all_fb = recorder.list_feedback(limit=500)
+        all_fb = recorder.list_feedback(limit=500, user_id=user_id)
         updated = next((fb for fb in all_fb if fb.id == feedback_id), None)
         if updated is None:
             raise HTTPException(

@@ -40,6 +40,7 @@ class MemoryFact:
     source_interaction_id: Optional[str] = None
     privacy_level: str = "private"  # public | private | sensitive
     tags: List[str] = field(default_factory=list)
+    user_id: str = "default"  # 用户隔离
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
     last_accessed_at: Optional[str] = None
@@ -220,6 +221,7 @@ class EvoMemoryEngine:
         layer: str = "working",
         tags: Optional[List[str]] = None,
         privacy_level: str = "private",
+        user_id: str = "default",
     ) -> MemoryFact:
         """手动添加记忆事实.
 
@@ -247,6 +249,7 @@ class EvoMemoryEngine:
             "importance": importance,
             "layer": layer,
             "privacy_level": privacy_level,
+            "user_id": user_id,
         }
         self._vs.add_memory(fact_id, content, metadata=chroma_meta)
 
@@ -255,8 +258,8 @@ class EvoMemoryEngine:
             self._db.execute(
                 """INSERT INTO memory_facts
                    (id, type, content, chroma_id, importance, weight, layer,
-                    privacy_level, tags_json, created_at, updated_at, last_accessed_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    privacy_level, tags_json, user_id, created_at, updated_at, last_accessed_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     fact_id,
                     type,
@@ -267,6 +270,7 @@ class EvoMemoryEngine:
                     layer,
                     privacy_level,
                     json.dumps(tags, ensure_ascii=False),
+                    user_id,
                     now,
                     now,
                     now,
@@ -372,6 +376,7 @@ class EvoMemoryEngine:
                     "importance": new_importance,
                     "layer": new_layer,
                     "privacy_level": new_privacy,
+                    "user_id": existing.user_id,
                 },
             )
 
@@ -443,6 +448,7 @@ class EvoMemoryEngine:
         type: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
+        user_id: str = "default",
     ) -> List[MemoryFact]:
         """分页列出记忆事实.
 
@@ -451,12 +457,13 @@ class EvoMemoryEngine:
             type: 按类型筛选. None 表示全部.
             limit: 每页数量.
             offset: 偏移量.
+            user_id: 用户 ID（数据隔离）.
 
         Returns:
             MemoryFact 列表.
         """
-        where_clauses: List[str] = []
-        params: List[Any] = []
+        where_clauses: List[str] = ["user_id = ?"]
+        params: List[Any] = [user_id]
 
         if layer and layer != "all":
             where_clauses.append("layer = ?")
@@ -475,17 +482,18 @@ class EvoMemoryEngine:
         rows = self._db.execute(sql, params).fetchall()
         return [self._row_to_fact(row) for row in rows]
 
-    def search_memories(self, query: str, top_k: int = 10) -> List[MemoryFact]:
+    def search_memories(self, query: str, top_k: int = 10, user_id: str = "default") -> List[MemoryFact]:
         """向量语义搜索记忆.
 
         Args:
             query: 查询文本.
             top_k: 返回结果数.
+            user_id: 用户 ID（数据隔离）.
 
         Returns:
             按相似度降序排列的 MemoryFact 列表.
         """
-        results = self._vs.search_memories(query, n_results=top_k)
+        results = self._vs.search_memories(query, n_results=top_k, user_id=user_id)
 
         facts: List[MemoryFact] = []
         for r in results:
@@ -504,23 +512,27 @@ class EvoMemoryEngine:
 
         return facts
 
-    def get_stats(self) -> MemoryStats:
+    def get_stats(self, user_id: str = "default") -> MemoryStats:
         """获取记忆统计.
 
         Returns:
             MemoryStats 对象.
         """
-        total = self._db.execute("SELECT COUNT(*) FROM memory_facts").fetchone()[0]
+        total = self._db.execute(
+            "SELECT COUNT(*) FROM memory_facts WHERE user_id = ?", (user_id,)
+        ).fetchone()[0]
 
         # by_layer
         layer_rows = self._db.execute(
-            "SELECT layer, COUNT(*) as cnt FROM memory_facts GROUP BY layer"
+            "SELECT layer, COUNT(*) as cnt FROM memory_facts WHERE user_id = ? GROUP BY layer",
+            (user_id,),
         ).fetchall()
         by_layer: Dict[str, int] = {r["layer"]: r["cnt"] for r in layer_rows}
 
         # by_type
         type_rows = self._db.execute(
-            "SELECT type, COUNT(*) as cnt FROM memory_facts GROUP BY type"
+            "SELECT type, COUNT(*) as cnt FROM memory_facts WHERE user_id = ? GROUP BY type",
+            (user_id,),
         ).fetchall()
         by_type: Dict[str, int] = {r["type"]: r["cnt"] for r in type_rows}
 
@@ -662,6 +674,7 @@ class EvoMemoryEngine:
         self,
         session_id: str,
         current_message: str,
+        user_id: str = "default",
     ) -> MemorySnapshot:
         """获取当前会话的完整记忆快照（对齐设计文档第369-375行、872-902行）.
 
@@ -684,12 +697,13 @@ class EvoMemoryEngine:
         snapshot_id = str(uuid4())
         now = _utcnow_iso()
 
-        # 1-2. Chroma 向量检索 top-20（core + working）
+        # 1-2. Chroma 向量检索 top-20（core + working + user_id 过滤）
         where_filter = {"layer": {"$in": ["core", "working"]}}
         chroma_results = self._vs.search_memories(
             current_message,
             n_results=20,
             where=where_filter,
+            user_id=user_id,
         )
 
         # 分离 core / working 结果
@@ -715,9 +729,10 @@ class EvoMemoryEngine:
                 if fact_layer == "working":
                     working_facts.append(fact)
 
-        # 3. 核心记忆（layer=core）：全量从 SQLite 获取
+        # 3. 核心记忆（layer=core）：全量从 SQLite 获取（该用户）
         core_rows = self._db.execute(
-            "SELECT * FROM memory_facts WHERE layer = 'core' ORDER BY importance DESC"
+            "SELECT * FROM memory_facts WHERE layer = 'core' AND user_id = ? ORDER BY importance DESC",
+            (user_id,),
         ).fetchall()
         core_facts = [self._row_to_fact(row) for row in core_rows]
         for f in core_facts:
@@ -823,6 +838,7 @@ class EvoMemoryEngine:
         session_id: str,
         user_message: str,
         assistant_response: str,
+        user_id: str = "default",
     ) -> List[MemoryFact]:
         """从对话中提取事实并存储（对齐设计文档第916-948行）.
 
@@ -878,7 +894,7 @@ class EvoMemoryEngine:
                         layer = "transient"
 
                     # 3. Chroma 去重查询 (cosine similarity, 使用 doc embedding 确保同空间比较)
-                    search_results = self._vs.search_memories_doc_embedding(content, n_results=1)
+                    search_results = self._vs.search_memories_doc_embedding(content, n_results=1, user_id=user_id)
 
                     if (
                         search_results
@@ -911,6 +927,7 @@ class EvoMemoryEngine:
                                 privacy_level=privacy,
                                 session_id=session_id,
                                 now=now,
+                                user_id=user_id,
                             )
                             facts.append(fact)
                     else:
@@ -924,6 +941,7 @@ class EvoMemoryEngine:
                             privacy_level=privacy,
                             session_id=session_id,
                             now=now,
+                            user_id=user_id,
                         )
                         facts.append(fact)
 
@@ -977,6 +995,7 @@ class EvoMemoryEngine:
             source_interaction_id=row["source_interaction_id"],
             privacy_level=row["privacy_level"],
             tags=tags,
+            user_id=row["user_id"] if "user_id" in row.keys() else "default",
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             last_accessed_at=row["last_accessed_at"],
@@ -992,6 +1011,7 @@ class EvoMemoryEngine:
         privacy_level: str,
         session_id: str,
         now: str,
+        user_id: str = "default",
     ) -> MemoryFact:
         """内部方法：将从 LLM 提取的事实写入存储."""
         # Chroma
@@ -1000,6 +1020,7 @@ class EvoMemoryEngine:
             "importance": importance,
             "layer": layer,
             "privacy_level": privacy_level,
+            "user_id": user_id,
         }
         self._vs.add_memory(fact_id, content, metadata=chroma_meta)
 
@@ -1007,9 +1028,9 @@ class EvoMemoryEngine:
         self._db.execute(
             """INSERT INTO memory_facts
                (id, type, content, chroma_id, importance, weight, layer,
-                source_session_id, privacy_level, tags_json,
+                source_session_id, privacy_level, tags_json, user_id,
                 created_at, updated_at, last_accessed_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 fact_id,
                 type,
@@ -1021,6 +1042,7 @@ class EvoMemoryEngine:
                 session_id,
                 privacy_level,
                 json.dumps([], ensure_ascii=False),
+                user_id,
                 now,
                 now,
                 now,

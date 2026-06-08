@@ -128,3 +128,19 @@ CREATE TABLE IF NOT EXISTS memory_snapshots (
 );
 
 CREATE INDEX IF NOT EXISTS idx_snapshot_session ON memory_snapshots(session_id);
+
+-- ═══════════════════════════════════════════════════
+-- 🆕 v0.2.0: 用户认证表
+-- ═══════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS users (
+    id                      TEXT PRIMARY KEY,
+    username                TEXT NOT NULL UNIQUE,
+    email                   TEXT NOT NULL UNIQUE,
+    password_hash           TEXT NOT NULL,
+    created_at              TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at              TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);

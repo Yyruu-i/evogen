@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS _migration_versions (
 MIGRATIONS = {
     "v0.1.0_initial_schema": str(SCHEMA_PATH),
     "v0.1.1_sessions": str(Path(__file__).parent / "migration_v0.1.1_sessions.sql"),
+    "v0.2.0_auth_isolation": str(Path(__file__).parent / "migration_v0.2.0_auth.sql"),
 }
 
 
@@ -167,6 +168,7 @@ def _verify_tables(db):
         "experience_feedback",
         "persona_attributes",
         "memory_snapshots",
+        "users",
     ]
 
     for table in required_tables:

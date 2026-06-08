@@ -136,7 +136,7 @@ def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _ensure_session(session_id: str | None) -> tuple[str, bool]:
+def _ensure_session(session_id: str | None, user_id: str = "default") -> tuple[str, bool]:
     """确保会话存在，返回 (session_id, is_new)."""
     from backend.db.connection import get_db
     db = get_db()
@@ -148,8 +148,8 @@ def _ensure_session(session_id: str | None) -> tuple[str, bool]:
     new_id = str(uuid.uuid4())
     now = _utcnow_iso()
     db.execute(
-        "INSERT INTO sessions (id, title, source, created_at, updated_at, message_count, token_estimate) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (new_id, "新对话", "web", now, now, 0, 0),
+        "INSERT INTO sessions (id, title, source, user_id, created_at, updated_at, message_count, token_estimate) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (new_id, "新对话", "web", user_id, now, now, 0, 0),
     )
     db.commit()
     return new_id, True
@@ -599,7 +599,7 @@ async def _tool_loop_stream_generator(
     yield "data: [DONE]\n\n"
 
 
-async def _llm_stream_generator(message: str, session_id: str):
+async def _llm_stream_generator(message: str, session_id: str, user_id: str = "default"):
     """主入口：处理用户消息，管理联网搜索 + 浏览器工具调用 + LLM 对话.
 
     流程：
@@ -609,7 +609,7 @@ async def _llm_stream_generator(message: str, session_id: str):
     4. 工具调用循环（LLM 可自主调用浏览器工具）
     5. 流式输出最终回复
     """
-    session_id, is_new = _ensure_session(session_id)
+    session_id, is_new = _ensure_session(session_id, user_id=user_id)
 
     # ⚠️ 必须在保存用户消息前加载历史，避免当前消息自重复
     recent_history = _load_recent_messages(session_id, max_messages=20)
@@ -697,7 +697,7 @@ async def _llm_stream_generator(message: str, session_id: str):
 async def agent_chat(request: ChatRequest, req: Request, user_id: str = Depends(get_current_user)):
     """SSE 流式对话端点."""
     return StreamingResponse(
-        _llm_stream_generator(request.message, request.session),
+        _llm_stream_generator(request.message, request.session, user_id=user_id),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

@@ -3,11 +3,11 @@
 端点前缀：/api/v1/auth
 """
 
+import bcrypt
 import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
-from passlib.hash import bcrypt
 from pydantic import BaseModel, EmailStr
 
 from backend.auth import create_token
@@ -45,12 +45,12 @@ class UserResponse(BaseModel):
 
 def _hash_password(password: str) -> str:
     """使用 bcrypt 哈希密码."""
-    return bcrypt.hash(password)
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
 
 def _verify_password(password: str, password_hash: str) -> bool:
     """验证密码."""
-    return bcrypt.verify(password, password_hash)
+    return bcrypt.checkpw(password.encode(), password_hash.encode())
 
 
 def _user_row_to_dict(row) -> UserResponse:

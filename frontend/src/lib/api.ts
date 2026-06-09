@@ -43,7 +43,10 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || body.detail || `HTTP ${res.status}`);
+    const msg = typeof body.detail === 'object'
+      ? (body.detail?.error || JSON.stringify(body.detail))
+      : (body.detail || body.error);
+    throw new Error(msg || `HTTP ${res.status}`);
   }
 
   const json = await res.json();
@@ -303,7 +306,10 @@ export function streamChat(
     .then(async (res) => {
       if (!res.ok) {
         const errBody = await res.json().catch(() => ({}));
-        throw new Error(errBody.error || errBody.detail || `HTTP ${res.status}`);
+        const msg = typeof errBody.detail === 'object'
+          ? (errBody.detail?.error || JSON.stringify(errBody.detail))
+          : (errBody.detail || errBody.error);
+        throw new Error(msg || `HTTP ${res.status}`);
       }
       const reader = res.body?.getReader();
       if (!reader) throw new Error('No response body');

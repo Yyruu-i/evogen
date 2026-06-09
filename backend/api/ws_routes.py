@@ -92,7 +92,7 @@ async def _handle_agent(ws: WebSocket, data: dict, user_id: str):
         from backend.api.chat_routes import _llm_stream_generator
 
         full_text = ""
-        async for sse_event in _llm_stream_generator(message, session):
+        async for sse_event in _llm_stream_generator(message, session, user_id=user_id):
             if isinstance(sse_event, str):
                 line = sse_event.strip()
                 if not line or not line.startswith("data: "):
@@ -150,11 +150,24 @@ async def websocket_endpoint(ws: WebSocket):
     接受 JSON 帧:
     - connect: {"type": "req", "method": "connect", "params": {"token": "..."}}
     - agent: {"type": "req", "method": "agent", "params": {"message": "...", "session": "..."}}
+
+    每 30 秒发送 ping 帧保持连接活跃。
     """
     await ws.accept()
 
     user_id: str | None = None
     authenticated = False
+
+    async def heartbeat():
+        """每 30 秒发送 ping，保持 WebSocket 连接活跃."""
+        while True:
+            await asyncio.sleep(30)
+            try:
+                await ws.send_json({"type": "ping"})
+            except Exception:
+                break
+
+    heartbeat_task = asyncio.create_task(heartbeat())
 
     try:
         while True:
@@ -205,3 +218,9 @@ async def websocket_endpoint(ws: WebSocket):
         logger.info(f"WebSocket disconnected: user_id={user_id}")
     except Exception as e:
         logger.error(f"WebSocket error: {e}", exc_info=True)
+    finally:
+        heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except asyncio.CancelledError:
+            pass

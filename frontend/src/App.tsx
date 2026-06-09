@@ -60,19 +60,13 @@ function AppRoutes() {
     return <LandingPage onEnter={() => setLanded(true)} />;
   }
 
-  // If not authenticated after landing, show auth pages
-  if (!isAuthenticated) {
-    return (
-      <Routes>
-        <Route path="/login" element={<LoginPage />} />
-        <Route path="/register" element={<RegisterPage />} />
-        <Route path="*" element={<Navigate to="/login" replace />} />
-      </Routes>
-    );
-  }
-
   return (
     <Routes>
+      {/* Public routes — always accessible, never intercepted by RequireAuth */}
+      <Route path="/login" element={<LoginPage />} />
+      <Route path="/register" element={<RegisterPage />} />
+
+      {/* Protected routes — RequireAuth redirects to /login if unauthenticated */}
       <Route element={<RequireAuth><ChatProvider><AppLayout /></ChatProvider></RequireAuth>}>
         <Route index element={<Navigate to="/chat" replace />} />
 
@@ -123,6 +117,9 @@ function AppRoutes() {
           <Route path="system" element={<SettingsSystemPage />} />
         </Route>
       </Route>
+
+      {/* Catch-all: authenticated → /chat, unauthenticated → /login */}
+      <Route path="*" element={<Navigate to={isAuthenticated ? "/chat" : "/login"} replace />} />
     </Routes>
   );
 }

@@ -141,9 +141,12 @@ def _ensure_session(session_id: str | None, user_id: str = "default") -> tuple[s
     from backend.db.connection import get_db
     db = get_db()
     if session_id:
-        row = db.execute("SELECT id FROM sessions WHERE id=?", (session_id,)).fetchone()
+        row = db.execute(
+            "SELECT id FROM sessions WHERE id=? AND user_id=?", (session_id, user_id),
+        ).fetchone()
         if row:
             return session_id, False
+        # session_id 存在但不属于当前用户 → 创建新会话（不暴露错误信息）
     # 创建新会话
     new_id = str(uuid.uuid4())
     now = _utcnow_iso()
@@ -501,6 +504,7 @@ async def _tool_loop_stream_generator(
     session_id: str,
     original_message: str,
     search_context: str,
+    user_id: str = "default",
 ):
     """工具调用循环：反复调用 LLM → 执行工具 → 追加结果，直到 LLM 返回纯文本.
 
@@ -589,7 +593,7 @@ async def _tool_loop_stream_generator(
 
         # ── 自动提取制品（代码块 / 文档 / 表格）──
         try:
-            artifact_count = extract_artifacts_from_text(full_text_response, session_id)
+            artifact_count = extract_artifacts_from_text(full_text_response, session_id, user_id=user_id)
             if artifact_count:
                 logger.info(f"Auto-extracted {artifact_count} artifact(s) from LLM response")
                 yield f"data: {json.dumps({'status': 'artifact_extracted', 'count': artifact_count})}\n\n"
@@ -688,7 +692,7 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
 
     # ── 进入工具调用循环 ──
     async for sse_event in _tool_loop_stream_generator(
-        llm_messages, session_id, message, search_context
+        llm_messages, session_id, message, search_context, user_id=user_id
     ):
         yield sse_event
 

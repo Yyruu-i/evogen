@@ -15,9 +15,11 @@ from typing import Optional
 from zipfile import ZipFile
 
 import yaml
-from fastapi import APIRouter, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+
+from backend.auth.dependencies import get_current_user
 
 logger = logging.getLogger(__name__)
 
@@ -236,8 +238,8 @@ def _skill_to_dict(skill_id: str, md_path: Path) -> dict:
 
 
 @router.get("/skills")
-async def list_resource_skills():
-    """列出所有技能目录下的技能（多源扫描，去重）."""
+async def list_resource_skills(user_id: str = Depends(get_current_user)):
+    """列出所有技能目录下的技能（多源扫描，去重，按用户隔离）."""
     seen: set[str] = set()
     skills = []
     for sd in _SKILLS_DIRS:
@@ -249,6 +251,18 @@ async def list_resource_skills():
             skill_id = md.parent.name
             if skill_id in seen:
                 continue
+
+            # 用户隔离：检查技能路径是否属于其他用户的子目录
+            # 路径如 ~/.hermes/skills/{user_id}/... 表示用户自定义技能
+            try:
+                rel = md.parent.relative_to(sd)
+                parts = rel.parts
+                if len(parts) >= 2 and parts[0] != user_id:
+                    # 该技能属于其他用户的子目录，跳过
+                    continue
+            except ValueError:
+                pass
+
             seen.add(skill_id)
             skills.append(_skill_to_dict(skill_id, md))
     return {"ok": True, "data": {"skills": skills, "total": len(skills)}}
@@ -260,7 +274,7 @@ async def list_resource_skills():
 
 
 @router.get("/skills/{skill_id}")
-async def get_resource_skill(skill_id: str):
+async def get_resource_skill(skill_id: str, user_id: str = Depends(get_current_user)):
     """获取单个技能的完整内容."""
     skill_dir = _skill_dir(skill_id)
     md_file = skill_dir / "SKILL.md"
@@ -274,16 +288,18 @@ async def get_resource_skill(skill_id: str):
 
 
 @router.post("/skills", status_code=201)
-async def create_resource_skill(request: CreateSkillRequest):
-    """创建新技能 — 在 ~/.hermes/skills/ 下创建目录和 SKILL.md."""
+async def create_resource_skill(request: CreateSkillRequest, user_id: str = Depends(get_current_user)):
+    """创建新技能 — 在用户专属目录下创建 ~/.hermes/skills/{user_id}/SKILL.md."""
     # 生成安全 ID
     skill_id = request.name.lower().replace(" ", "-").replace("_", "-")
 
-    # 确定目标目录
+    # 确定目标目录（用户隔离：所有自定义技能写入 ~/.hermes/skills/{user_id}/...）
+    write_dir = _get_write_dir()
+    user_skills_base = write_dir / user_id
     if request.category:
-        target_dir = _get_write_dir() / request.category / skill_id
+        target_dir = user_skills_base / request.category / skill_id
     else:
-        target_dir = _get_write_dir() / skill_id
+        target_dir = user_skills_base / skill_id
 
     if target_dir.exists():
         raise HTTPException(
@@ -316,7 +332,7 @@ async def create_resource_skill(request: CreateSkillRequest):
 
 
 @router.put("/skills/{skill_id}")
-async def update_resource_skill(skill_id: str, request: UpdateSkillRequest):
+async def update_resource_skill(skill_id: str, request: UpdateSkillRequest, user_id: str = Depends(get_current_user)):
     """更新技能 — 可更新 name/description/content/category.
 
     如果更新 category，会移动目录。
@@ -342,10 +358,12 @@ async def update_resource_skill(skill_id: str, request: UpdateSkillRequest):
 
     # 处理改名 / 改分类 → 目录移动
     new_skill_id = new_name.lower().replace(" ", "-").replace("_", "-")
+    write_dir = _get_write_dir()
+    user_skills_base = write_dir / user_id
     if new_category:
-        new_target_dir = _get_write_dir() / new_category / new_skill_id
+        new_target_dir = user_skills_base / new_category / new_skill_id
     else:
-        new_target_dir = _get_write_dir() / new_skill_id
+        new_target_dir = user_skills_base / new_skill_id
 
     if new_target_dir != skill_dir:
         if new_target_dir.exists():
@@ -398,8 +416,8 @@ def _delete_skill_by_id(skill_id: str) -> bool:
 
 
 @router.delete("/skills/{skill_id}")
-async def delete_resource_skill(skill_id: str):
-    """删除技能 — 移除整个技能目录."""
+async def delete_resource_skill(skill_id: str, user_id: str = Depends(get_current_user)):
+    """删除技能 — 移除整个技能目录（仅限用户自有技能）."""
     if not _delete_skill_by_id(skill_id):
         raise HTTPException(status_code=404, detail={"ok": False, "error": f"Skill not found: {skill_id}"})
     return {"ok": True, "data": {"deleted": skill_id}}

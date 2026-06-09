@@ -237,12 +237,12 @@ async def delete_fact(fact_id: str):
 
 
 @router.get("/stats")
-async def get_stats():
+async def get_stats(user_id: str = Depends(get_current_user)):
     """获取记忆统计信息."""
     engine = _get_engine()
 
     try:
-        stats = engine.get_stats()
+        stats = engine.get_stats(user_id=user_id)
         return {"ok": True, "data": _stats_to_dict(stats)}
     except Exception as e:
         logger.error(f"get_stats failed: {e}", exc_info=True)
@@ -282,7 +282,7 @@ async def reinforce_fact(fact_id: str, request: Optional[dict] = None):
 
 
 @router.get("/capacity")
-async def get_capacity():
+async def get_capacity(user_id: str = Depends(get_current_user)):
     """获取记忆容量信息."""
     engine = _get_engine()
 
@@ -304,7 +304,7 @@ class SetLimitRequest(BaseModel):
 
 
 @router.put("/capacity/limit")
-async def set_capacity_limit(req: SetLimitRequest):
+async def set_capacity_limit(req: SetLimitRequest, user_id: str = Depends(get_current_user)):
     """设置记忆容量上限（最小 100）."""
     if req.limit < 100:
         raise HTTPException(
@@ -334,7 +334,7 @@ class CleanupRequest(BaseModel):
 
 
 @router.post("/capacity/cleanup")
-async def cleanup_capacity(req: CleanupRequest):
+async def cleanup_capacity(req: CleanupRequest, user_id: str = Depends(get_current_user)):
     """清理记忆释放容量."""
     if req.strategy not in ("age", "importance", "auto"):
         raise HTTPException(

@@ -76,7 +76,7 @@ def store_artifact(
     return artifact_id
 
 
-def extract_artifacts_from_text(text: str, session_id: str) -> int:
+def extract_artifacts_from_text(text: str, session_id: str, user_id: str = "default") -> int:
     """从文本中自动提取制品（代码块、文档、表格）并写入存储.
 
     返回提取的制品数量.
@@ -98,6 +98,7 @@ def extract_artifacts_from_text(text: str, session_id: str) -> int:
             "code", title, code,
             language=lang or "text",
             session_id=session_id,
+            user_id=user_id,
         )
         count += 1
 
@@ -116,6 +117,7 @@ def extract_artifacts_from_text(text: str, session_id: str) -> int:
             "doc", title, body,
             language="markdown",
             session_id=session_id,
+            user_id=user_id,
         )
         count += 1
 
@@ -142,6 +144,7 @@ def extract_artifacts_from_text(text: str, session_id: str) -> int:
             "doc", table_title, table_text,
             language="markdown",
             session_id=session_id,
+            user_id=user_id,
         )
         count += 1
 

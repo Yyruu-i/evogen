@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AuthProvider, useAuth } from '@/context/auth-context';
 import { ChatProvider } from '@/context/chat-context';
+import { WsStatusProvider } from '@/context/ws-context';
 import { AppLayout } from '@/components/layout/app-layout';
 import { LandingPage } from '@/pages/landing';
 import { LoginPage } from '@/pages/login';
@@ -67,7 +68,7 @@ function AppRoutes() {
       <Route path="/register" element={<RegisterPage />} />
 
       {/* Protected routes — RequireAuth redirects to /login if unauthenticated */}
-      <Route element={<RequireAuth><ChatProvider><AppLayout /></ChatProvider></RequireAuth>}>
+      <Route element={<RequireAuth><WsStatusProvider><ChatProvider><AppLayout /></ChatProvider></WsStatusProvider></RequireAuth>}>
         <Route index element={<Navigate to="/chat" replace />} />
 
         {/* Chat */}

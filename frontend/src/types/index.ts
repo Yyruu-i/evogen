@@ -183,6 +183,7 @@ export interface Skill {
   tags: string[];
   category: string;
   source: 'hub' | 'local' | 'auto-generated';
+  scope: 'builtin' | 'user';
   version: number;
   use_count: number;
   success_rate: number;

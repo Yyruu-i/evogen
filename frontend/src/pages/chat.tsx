@@ -6,6 +6,7 @@ import { EvoGenWS } from '@/lib/ws';
 import { cn, generateId } from '@/lib/utils';
 import { useQueryClient } from '@tanstack/react-query';
 import { useChatContext } from '@/context/chat-context';
+import { useWsStatus } from '@/context/ws-context';
 import { MessageBubble } from '@/components/chat/message-bubble';
 import { ChatInput } from '@/components/chat/chat-input';
 import { WelcomeEmpty } from '@/components/chat/welcome-empty';
@@ -15,7 +16,7 @@ export function ChatPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const activeId = searchParams.get('session') || '';
   const [input, setInput] = useState('');
-  const [wsStatus, setWsStatus] = useState<'connecting' | 'connected' | 'disconnected'>('disconnected');
+  const { wsStatus, setWsStatus } = useWsStatus();
   const wsRef = useRef<EvoGenWS | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);

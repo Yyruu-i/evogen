@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
+import { useAuth } from '@/context/auth-context';
+import { useWsStatus } from '@/context/ws-context';
 import {
   MessageSquare,
   Brain,
@@ -19,8 +21,24 @@ import {
 } from 'lucide-react';
 import { ThemeToggle } from '@/components/shared/theme-toggle';
 import { useSessions } from '@/hooks/use-sessions';
-import { useAuth } from '@/context/auth-context';
 import { cn } from '@/lib/utils';
+import type { WsStatus } from '@/context/ws-context';
+
+/* ── WS status badge (shared between header & sidebar) ──────── */
+function WsStatusBadge() {
+  const { wsStatus } = useWsStatus();
+  const statusConfig: Record<WsStatus, { label: string; color: string; bg: string }> = {
+    connected: { label: 'ONLINE', color: 'var(--color-mint)', bg: 'rgba(0,255,136,0.08)' },
+    connecting: { label: 'SYNC', color: 'var(--color-warning)', bg: 'rgba(255,170,51,0.08)' },
+    disconnected: { label: 'OFF', color: 'var(--color-text-muted)', bg: 'rgba(100,100,200,0.06)' },
+  };
+  const { label, color, bg } = statusConfig[wsStatus];
+  return (
+    <span className="text-[10px] px-1.5 py-0.5 rounded font-mono" style={{ background: bg, color }}>
+      {label}
+    </span>
+  );
+}
 
 /* ── DeerFlow-style navigation sections ───────────────────────── */
 interface NavSection {
@@ -283,15 +301,7 @@ export function Sidebar() {
               <span className="text-[10px] font-mono tracking-wider" style={{ color: 'var(--color-text-muted)' }}>
                 v1.0
               </span>
-              <span
-                className="text-[10px] px-1.5 py-0.5 rounded font-mono"
-                style={{
-                  background: 'rgba(0,255,136,0.08)',
-                  color: 'var(--color-mint)',
-                }}
-              >
-                LIVE
-              </span>
+              <WsStatusBadge />
             </>
           )}
         </div>

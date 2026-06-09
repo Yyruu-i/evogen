@@ -340,8 +340,8 @@ export function SkillsLocalPage() {
                       {skillLabel(skill.description, SKILL_NAME_CN)}
                     </p>
                   </div>
-                  <Badge variant={skill.source === 'local' ? 'default' : 'accent'} className="ml-2 shrink-0">
-                    {skill.source === 'local' ? '本地' : skill.source === 'hub' ? '市场' : '自动生成'}
+                  <Badge variant={skill.scope === 'builtin' ? 'accent' : skill.source === 'local' ? 'default' : 'accent'} className="ml-2 shrink-0">
+                    {skill.scope === 'builtin' ? '内置' : skill.source === 'local' ? '本地' : skill.source === 'hub' ? '市场' : '自动生成'}
                   </Badge>
                 </div>
                 <div className="flex items-center gap-2 mt-3 flex-wrap">
@@ -363,8 +363,8 @@ export function SkillsLocalPage() {
                 )}
               </div>
 
-              {/* Action buttons (hidden in batch mode) */}
-              {!batchMode && (
+              {/* Action buttons — hidden for builtin skills and batch mode */}
+              {!batchMode && skill.scope !== 'builtin' && (
                 <div className="flex gap-1 mt-3 pt-2 border-t border-color/30 opacity-0 group-hover:opacity-100 transition-opacity">
                   <button
                     className="btn-ghost h-6 text-[11px] px-2"

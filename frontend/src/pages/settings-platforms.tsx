@@ -12,16 +12,24 @@ export function SettingsPlatformsPage() {
     staleTime: 30000,
   });
   const [showAdd, setShowAdd] = useState(false);
-  const [newToken, setNewToken] = useState('');
   const [newPlatform, setNewPlatform] = useState('telegram');
+  const [newToken, setNewToken] = useState('');
+  const [appId, setAppId] = useState('');
+  const [appSecret, setAppSecret] = useState('');
 
   const platforms = data?.platforms || [];
 
   const handleConnect = async () => {
     try {
-      await systemApi.connectPlatform(newPlatform, newToken);
+      if (newPlatform === 'feishu' || newPlatform === 'lark') {
+        await systemApi.connectPlatform(newPlatform, { app_id: appId, app_secret: appSecret });
+      } else {
+        await systemApi.connectPlatform(newPlatform, { token: newToken });
+      }
       setShowAdd(false);
       setNewToken('');
+      setAppId('');
+      setAppSecret('');
     } catch {
       // ignore
     }
@@ -49,14 +57,36 @@ export function SettingsPlatformsPage() {
           >
             <option value="telegram">Telegram</option>
             <option value="discord">Discord</option>
+            <option value="feishu">飞书 (Feishu)</option>
+            <option value="lark">Lark (国际版)</option>
           </select>
-          <input
-            type="text"
-            value={newToken}
-            onChange={(e) => setNewToken(e.target.value)}
-            placeholder="Bot Token"
-            className="w-full"
-          />
+
+          {(newPlatform === 'feishu' || newPlatform === 'lark') ? (
+            <>
+              <input
+                type="text"
+                value={appId}
+                onChange={(e) => setAppId(e.target.value)}
+                placeholder="App ID"
+                className="w-full"
+              />
+              <input
+                type="password"
+                value={appSecret}
+                onChange={(e) => setAppSecret(e.target.value)}
+                placeholder="App Secret"
+                className="w-full"
+              />
+            </>
+          ) : (
+            <input
+              type="text"
+              value={newToken}
+              onChange={(e) => setNewToken(e.target.value)}
+              placeholder="Bot Token"
+              className="w-full"
+            />
+          )}
           <div className="flex gap-2">
             <button className="btn-primary h-7 text-[12px]" onClick={handleConnect}>连接</button>
             <button className="btn-ghost h-7 text-[12px]" onClick={() => setShowAdd(false)}>取消</button>

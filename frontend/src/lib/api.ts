@@ -357,10 +357,10 @@ export const systemApi = {
     return request<import('@/types').PlatformListResponse>('/config/platforms');
   },
 
-  connectPlatform(name: string, token: string) {
+  connectPlatform(name: string, config: Record<string, string>) {
     return request<{ ok: true; platform_status: import('@/types').PlatformInfo }>(`/config/platforms/${name}/connect`, {
       method: 'POST',
-      body: JSON.stringify({ token }),
+      body: JSON.stringify(config),
     });
   },
 

@@ -228,7 +228,7 @@ async def get_trajectory(trajectory_id: str, user_id: str = Depends(get_current_
     recorder = _get_recorder()
 
     try:
-        detail = recorder.get_trajectory(trajectory_id)
+        detail = recorder.get_trajectory(trajectory_id, user_id=user_id)
         if detail is None:
             raise HTTPException(
                 status_code=404,

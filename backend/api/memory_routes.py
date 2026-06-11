@@ -126,7 +126,7 @@ async def get_fact(fact_id: str, user_id: str = Depends(get_current_user)):
     """获取单条记忆事实."""
     engine = _get_engine()
 
-    fact = engine._get_fact_by_id(fact_id)
+    fact = engine._get_fact_by_id(fact_id, user_id=user_id)
     if fact is None:
         raise HTTPException(
             status_code=404,
@@ -185,7 +185,7 @@ async def create_fact(request: dict, user_id: str = Depends(get_current_user)):
 
 
 @router.put("/facts/{fact_id}")
-async def update_fact(fact_id: str, request: dict):
+async def update_fact(fact_id: str, request: dict, user_id: str = Depends(get_current_user)):
     """更新记忆事实，支持部分字段更新.
 
     Request body: {content?, type?, importance?, layer?, tags?, privacy_level?}
@@ -193,7 +193,7 @@ async def update_fact(fact_id: str, request: dict):
     engine = _get_engine()
 
     try:
-        fact = engine.update_fact(fact_id, **request)
+        fact = engine.update_fact(fact_id, user_id=user_id, **request)
         return {"ok": True, "data": _fact_to_dict(fact)}
     except ValueError as e:
         raise HTTPException(
@@ -211,12 +211,12 @@ async def update_fact(fact_id: str, request: dict):
 
 
 @router.delete("/facts/{fact_id}")
-async def delete_fact(fact_id: str):
+async def delete_fact(fact_id: str, user_id: str = Depends(get_current_user)):
     """删除记忆事实."""
     engine = _get_engine()
 
-    # 先检查是否存在
-    existing = engine._get_fact_by_id(fact_id)
+    # 先检查是否存在且属于当前用户
+    existing = engine._get_fact_by_id(fact_id, user_id=user_id)
     if existing is None:
         raise HTTPException(
             status_code=404,
@@ -255,7 +255,7 @@ async def get_stats(user_id: str = Depends(get_current_user)):
 
 
 @router.post("/facts/{fact_id}/reinforce")
-async def reinforce_fact(fact_id: str, request: Optional[dict] = None):
+async def reinforce_fact(fact_id: str, request: Optional[dict] = None, user_id: str = Depends(get_current_user)):
     """强化记忆（增加权重和重要性）.
 
     Request body (optional): {amount: float}
@@ -264,7 +264,7 @@ async def reinforce_fact(fact_id: str, request: Optional[dict] = None):
     amount = float((request or {}).get("amount", 0.1))
 
     try:
-        fact = engine.reinforce(fact_id, amount=amount)
+        fact = engine.reinforce(fact_id, amount=amount, user_id=user_id)
         return {"ok": True, "data": _fact_to_dict(fact)}
     except ValueError as e:
         raise HTTPException(

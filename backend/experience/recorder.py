@@ -344,20 +344,28 @@ class TraceRecorder:
 
         return summaries
 
-    def get_trajectory(self, trajectory_id: str) -> Optional[TrajectoryDetail]:
+    def get_trajectory(self, trajectory_id: str, user_id: str | None = None) -> Optional[TrajectoryDetail]:
         """获取单条轨迹详情，包含完整 turns + outcome + feedback.
 
         Args:
             trajectory_id: 轨迹 ID
+            user_id: 用户 ID（隔离校验）
 
         Returns:
             轨迹详情，不存在时返回 None
         """
-        row = self._db.execute(
-            """SELECT id, session_id, session_title, turns_json, outcome_json, created_at
-               FROM experience_trajectories WHERE id = ?""",
-            (trajectory_id,),
-        ).fetchone()
+        if user_id:
+            row = self._db.execute(
+                """SELECT id, session_id, session_title, turns_json, outcome_json, created_at
+                   FROM experience_trajectories WHERE id = ? AND user_id = ?""",
+                (trajectory_id, user_id),
+            ).fetchone()
+        else:
+            row = self._db.execute(
+                """SELECT id, session_id, session_title, turns_json, outcome_json, created_at
+                   FROM experience_trajectories WHERE id = ?""",
+                (trajectory_id,),
+            ).fetchone()
 
         if row is None:
             return None

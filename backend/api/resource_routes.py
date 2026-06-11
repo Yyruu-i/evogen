@@ -284,7 +284,15 @@ async def get_resource_skill(skill_id: str, user_id: str = Depends(get_current_u
     skill_dir = _skill_dir(skill_id)
     md_file = skill_dir / "SKILL.md"
     content = md_file.read_text(encoding="utf-8")
-    return {"ok": True, "data": {"skill": _skill_to_dict(skill_id, md_file), "content": content}}
+    # 确定 scope：检查是否在用户子目录下
+    scope = "builtin"
+    try:
+        write_dir = _get_write_dir()
+        md_file.resolve().relative_to((write_dir / user_id).resolve())
+        scope = "user"
+    except ValueError:
+        pass
+    return {"ok": True, "data": {"skill": _skill_to_dict(skill_id, md_file, scope=scope), "content": content}}
 
 
 # ════════════════════════════════════════════════════════
@@ -327,7 +335,7 @@ async def create_resource_skill(request: CreateSkillRequest, user_id: str = Depe
     logger.info(f"Skill created: {skill_id} at {target_dir}")
     return {
         "ok": True,
-        "data": _skill_to_dict(skill_id, md_file),
+        "data": _skill_to_dict(skill_id, md_file, scope="user"),
     }
 
 
@@ -386,7 +394,7 @@ async def update_resource_skill(skill_id: str, request: UpdateSkillRequest, user
     _write_file_sync(md_file, new_md)
 
     logger.info(f"Skill updated: {skill_id}")
-    return {"ok": True, "data": _skill_to_dict(skill_id, md_file)}
+    return {"ok": True, "data": _skill_to_dict(skill_id, md_file, scope="user")}
 
 
 # ════════════════════════════════════════════════════════
@@ -398,24 +406,17 @@ class BatchDeleteRequest(BaseModel):
     skill_ids: list[str] = Field(..., description="要删除的技能 ID 列表")
 
 
-def _delete_skill_by_id(skill_id: str) -> bool:
-    """删除单个技能 — 先尝试写入目录，再扫描所有目录。返回是否成功."""
-    # 1. 优先从写入目录删除
-    for category_dir in list(_get_write_dir().iterdir()) + [_get_write_dir()]:
-        if category_dir.is_dir():
-            candidate = category_dir / skill_id if category_dir == _get_write_dir() else category_dir / skill_id
-            if candidate.is_dir() and (candidate / "SKILL.md").exists():
-                shutil.rmtree(str(candidate))
-                logger.info(f"Skill deleted (write dir): {skill_id}")
-                return True
-    # 2. 扫描所有目录
-    for sd in _SKILLS_DIRS:
-        if not sd.exists():
-            continue
-        for md in sd.rglob("SKILL.md"):
+def _delete_skill_by_id(skill_id: str, user_id: str = "default") -> bool:
+    """删除用户的技能 — 仅从用户专属目录删除。返回是否成功."""
+    write_dir = _get_write_dir()
+    user_base = write_dir / user_id
+
+    # 扫描用户目录及其子目录
+    if user_base.exists():
+        for md in user_base.rglob("SKILL.md"):
             if md.is_file() and md.parent.name == skill_id:
                 shutil.rmtree(str(md.parent))
-                logger.info(f"Skill deleted (scan): {skill_id} from {md.parent}")
+                logger.info(f"Skill deleted: {skill_id} from user={user_id}")
                 return True
     return False
 
@@ -423,13 +424,13 @@ def _delete_skill_by_id(skill_id: str) -> bool:
 @router.delete("/skills/{skill_id}")
 async def delete_resource_skill(skill_id: str, user_id: str = Depends(get_current_user)):
     """删除技能 — 移除整个技能目录（仅限用户自有技能）."""
-    if not _delete_skill_by_id(skill_id):
+    if not _delete_skill_by_id(skill_id, user_id=user_id):
         raise HTTPException(status_code=404, detail={"ok": False, "error": f"Skill not found: {skill_id}"})
     return {"ok": True, "data": {"deleted": skill_id}}
 
 
 @router.post("/skills/batch-delete")
-async def batch_delete_resource_skills(request: BatchDeleteRequest):
+async def batch_delete_resource_skills(request: BatchDeleteRequest, user_id: str = Depends(get_current_user)):
     """批量删除技能.
 
     请求体: {"skill_ids": ["skill-a", "skill-b", ...]}
@@ -438,7 +439,7 @@ async def batch_delete_resource_skills(request: BatchDeleteRequest):
     deleted: list[str] = []
     not_found: list[str] = []
     for sid in request.skill_ids:
-        if _delete_skill_by_id(sid):
+        if _delete_skill_by_id(sid, user_id=user_id):
             deleted.append(sid)
         else:
             not_found.append(sid)
@@ -624,11 +625,12 @@ async def import_resource_skills_json(request: dict):
 
 
 @router.get("/tools")
-async def list_resource_tools():
-    """列出工具注册表中的所有工具."""
+async def list_resource_tools(user_id: str = Depends(get_current_user)):
+    """列出当前用户的工具注册表."""
     registry = _load_tools_registry()
-    tools = list(registry.get("tools", {}).values())
-    return {"ok": True, "data": {"tools": tools, "total": len(tools)}}
+    all_tools = registry.get("tools", {})
+    user_tools = list(all_tools.get(user_id, {}).values())
+    return {"ok": True, "data": {"tools": user_tools, "total": len(user_tools)}}
 
 
 # ════════════════════════════════════════════════════════
@@ -637,10 +639,11 @@ async def list_resource_tools():
 
 
 @router.post("/tools", status_code=201)
-async def register_resource_tool(request: RegisterToolRequest):
-    """注册新工具到工具注册表."""
+async def register_resource_tool(request: RegisterToolRequest, user_id: str = Depends(get_current_user)):
+    """注册新工具到用户专属工具注册表."""
     registry = _load_tools_registry()
-    tools = registry.setdefault("tools", {})
+    all_tools = registry.setdefault("tools", {})
+    user_tools = all_tools.setdefault(user_id, {})
 
     tool_id = str(uuid.uuid4())
     tool_entry = {
@@ -650,13 +653,14 @@ async def register_resource_tool(request: RegisterToolRequest):
         "endpoint": request.endpoint,
         "category": request.category,
         "parameters": request.parameters,
+        "user_id": user_id,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
 
-    tools[tool_id] = tool_entry
+    user_tools[tool_id] = tool_entry
     _save_tools_registry(registry)
 
-    logger.info(f"Tool registered: {request.name} (id={tool_id})")
+    logger.info(f"Tool registered: {request.name} (id={tool_id}, user={user_id})")
     return {"ok": True, "data": tool_entry}
 
 
@@ -666,21 +670,22 @@ async def register_resource_tool(request: RegisterToolRequest):
 
 
 @router.delete("/tools/{tool_id}")
-async def delete_resource_tool(tool_id: str):
-    """从工具注册表中删除工具."""
+async def delete_resource_tool(tool_id: str, user_id: str = Depends(get_current_user)):
+    """从当前用户的工具注册表中删除工具."""
     registry = _load_tools_registry()
-    tools = registry.get("tools", {})
+    all_tools = registry.get("tools", {})
+    user_tools = all_tools.get(user_id, {})
 
-    if tool_id not in tools:
+    if tool_id not in user_tools:
         raise HTTPException(
             status_code=404,
             detail={"ok": False, "error": f"Tool not found: {tool_id}"},
         )
 
-    deleted = tools.pop(tool_id)
+    deleted = user_tools.pop(tool_id)
     _save_tools_registry(registry)
 
-    logger.info(f"Tool deleted: {deleted['name']} (id={tool_id})")
+    logger.info(f"Tool deleted: {deleted['name']} (id={tool_id}, user={user_id})")
     return {"ok": True, "data": {"deleted": tool_id}}
 
 

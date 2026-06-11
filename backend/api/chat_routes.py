@@ -256,7 +256,7 @@ async def _record_experience(session_id: str, user_message: str, assistant_respo
         # 异步提取记忆事实
         try:
             memory_engine = get_memory_engine()
-            memory_engine.extract_and_store(session_id, user_message, assistant_response)
+            memory_engine.extract_and_store(session_id, user_message, assistant_response, user_id=user_id)
             logger.debug(f"Memory facts extracted for session={session_id}")
         except Exception as e:
             logger.warning(f"Failed to extract memory facts: {e}")

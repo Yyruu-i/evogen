@@ -305,11 +305,12 @@ class EvoMemoryEngine:
 
         return fact
 
-    def update_fact(self, fact_id: str, **updates) -> MemoryFact:
+    def update_fact(self, fact_id: str, user_id: str | None = None, **updates) -> MemoryFact:
         """更新记忆事实，支持部分字段更新.
 
         Args:
             fact_id: 事实 ID
+            user_id: 用户 ID（隔离校验）
             **updates: 要更新的字段 (type, content, importance, layer,
                        privacy_level, tags)
 
@@ -319,7 +320,7 @@ class EvoMemoryEngine:
         Raises:
             ValueError: 事实不存在.
         """
-        existing = self._get_fact_by_id(fact_id)
+        existing = self._get_fact_by_id(fact_id, user_id=user_id)
         if existing is None:
             raise ValueError(f"Fact not found: {fact_id}")
 
@@ -406,12 +407,13 @@ class EvoMemoryEngine:
         if existing:
             self._emit(MemoryEvent(action="deleted", fact=existing))
 
-    def reinforce(self, fact_id: str, amount: float = 0.1) -> MemoryFact:
+    def reinforce(self, fact_id: str, amount: float = 0.1, user_id: str | None = None) -> MemoryFact:
         """强化记忆（增加权重和重要性）.
 
         Args:
             fact_id: 事实 ID
             amount: 强化幅度
+            user_id: 用户 ID（隔离校验）
 
         Returns:
             更新后的 MemoryFact 对象.
@@ -419,7 +421,7 @@ class EvoMemoryEngine:
         Raises:
             ValueError: 事实不存在.
         """
-        existing = self._get_fact_by_id(fact_id)
+        existing = self._get_fact_by_id(fact_id, user_id=user_id)
         if existing is None:
             raise ValueError(f"Fact not found: {fact_id}")
 
@@ -965,11 +967,16 @@ class EvoMemoryEngine:
     # Internal Helpers
     # ══════════════════════════════════════════════════
 
-    def _get_fact_by_id(self, fact_id: str) -> Optional[MemoryFact]:
-        """按 ID 查询单条事实."""
-        row = self._db.execute(
-            "SELECT * FROM memory_facts WHERE id = ?", (fact_id,)
-        ).fetchone()
+    def _get_fact_by_id(self, fact_id: str, user_id: str | None = None) -> Optional[MemoryFact]:
+        """按 ID 查询单条事实，可指定 user_id 做隔离校验."""
+        if user_id:
+            row = self._db.execute(
+                "SELECT * FROM memory_facts WHERE id = ? AND user_id = ?", (fact_id, user_id)
+            ).fetchone()
+        else:
+            row = self._db.execute(
+                "SELECT * FROM memory_facts WHERE id = ?", (fact_id,)
+            ).fetchone()
         if row is None:
             return None
         return self._row_to_fact(row)

@@ -138,19 +138,23 @@ class PersonaEngine:
 
     def _build_persona(self, attrs: Dict[str, Any]) -> Persona:
         """从属性字典构建 Persona 对象，缺失字段使用默认值."""
+        def _get(key, default):
+            v = attrs.get(key)
+            return default if v is None else v
+
         return Persona(
-            display_name=attrs.get("display_name", _DEFAULTS["display_name"]),
-            preferred_language=attrs.get("preferred_language", _DEFAULTS["preferred_language"]),
-            timezone=attrs.get("timezone", _DEFAULTS["timezone"]),
-            conciseness=float(attrs.get("conciseness", _DEFAULTS["conciseness"])),
-            formality=float(attrs.get("formality", _DEFAULTS["formality"])),
-            warmth=float(attrs.get("warmth", _DEFAULTS["warmth"])),
-            directness=float(attrs.get("directness", _DEFAULTS["directness"])),
-            auto_approve_tools=bool(attrs.get("auto_approve_tools", _DEFAULTS["auto_approve_tools"])),
-            show_thinking=bool(attrs.get("show_thinking", _DEFAULTS["show_thinking"])),
-            response_language=str(attrs.get("response_language", _DEFAULTS["response_language"])),
-            learned_preferences=attrs.get("learned_preferences", _DEFAULTS["learned_preferences"]) or {},
-            discovery_questions_asked=int(attrs.get("discovery_questions_asked", _DEFAULTS["discovery_questions_asked"])),
+            display_name=_get("display_name", _DEFAULTS["display_name"]),
+            preferred_language=_get("preferred_language", _DEFAULTS["preferred_language"]),
+            timezone=_get("timezone", _DEFAULTS["timezone"]),
+            conciseness=float(_get("conciseness", _DEFAULTS["conciseness"])),
+            formality=float(_get("formality", _DEFAULTS["formality"])),
+            warmth=float(_get("warmth", _DEFAULTS["warmth"])),
+            directness=float(_get("directness", _DEFAULTS["directness"])),
+            auto_approve_tools=bool(_get("auto_approve_tools", _DEFAULTS["auto_approve_tools"])),
+            show_thinking=bool(_get("show_thinking", _DEFAULTS["show_thinking"])),
+            response_language=str(_get("response_language", _DEFAULTS["response_language"])),
+            learned_preferences=_get("learned_preferences", _DEFAULTS["learned_preferences"]) or {},
+            discovery_questions_asked=int(_get("discovery_questions_asked", _DEFAULTS["discovery_questions_asked"])),
         )
 
     # ── 公开接口 ─────────────────────────────────
@@ -252,10 +256,10 @@ class PersonaEngine:
             lines.append(f"- 时区：{tz}")
 
         # 2) 回复风格（合并为一行，更自然）
-        conciseness = float(attrs.get("conciseness", _DEFAULTS["conciseness"]))
-        formality_val = float(attrs.get("formality", _DEFAULTS["formality"]))
-        warmth_val = float(attrs.get("warmth", _DEFAULTS["warmth"]))
-        directness_val = float(attrs.get("directness", _DEFAULTS["directness"]))
+        conciseness = float(attrs.get("conciseness") if attrs.get("conciseness") is not None else _DEFAULTS["conciseness"])
+        formality_val = float(attrs.get("formality") if attrs.get("formality") is not None else _DEFAULTS["formality"])
+        warmth_val = float(attrs.get("warmth") if attrs.get("warmth") is not None else _DEFAULTS["warmth"])
+        directness_val = float(attrs.get("directness") if attrs.get("directness") is not None else _DEFAULTS["directness"])
 
         style_parts = []
         if conciseness != _DEFAULTS["conciseness"]:

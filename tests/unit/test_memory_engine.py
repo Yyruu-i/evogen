@@ -650,19 +650,19 @@ class TestExtractAndStore:
             facts=[
                 {
                     "type": "fact",
-                    "content": "高重要性事实",
+                    "content": "用户是资深软件架构师",
                     "importance": 0.9,
                     "privacy_level": "internal",
                 },
                 {
                     "type": "fact",
-                    "content": "中重要性事实",
+                    "content": "用户每天早上喝豆浆",
                     "importance": 0.5,
                     "privacy_level": "internal",
                 },
                 {
                     "type": "fact",
-                    "content": "低重要性事实",
+                    "content": "用户昨天路过了一家书店",
                     "importance": 0.2,
                     "privacy_level": "internal",
                 },
@@ -674,9 +674,9 @@ class TestExtractAndStore:
 
         all_facts = engine.list_facts()
         layers = {f.content: f.layer for f in all_facts}
-        assert layers["高重要性事实"] == "core"
-        assert layers["中重要性事实"] == "working"
-        assert layers["低重要性事实"] == "transient"
+        assert layers["用户是资深软件架构师"] == "core"
+        assert layers["用户每天早上喝豆浆"] == "working"
+        assert layers["用户昨天路过了一家书店"] == "transient"
 
     def test_extract_type_mapping(self, engine):
         """FactExtractor type 正确映射到 schema type."""
@@ -703,10 +703,10 @@ class TestExtractAndStore:
         """FactExtractor privacy_level 正确映射."""
         mock = MockExtractor(
             facts=[
-                {"type": "preference", "content": "public info", "importance": 0.5, "privacy_level": "public"},
-                {"type": "preference", "content": "internal info", "importance": 0.5, "privacy_level": "internal"},
-                {"type": "preference", "content": "sensitive info", "importance": 0.5, "privacy_level": "sensitive"},
-                {"type": "preference", "content": "secret info", "importance": 0.5, "privacy_level": "secret"},
+                {"type": "preference", "content": "用户喜欢去公园散步", "importance": 0.5, "privacy_level": "public"},
+                {"type": "preference", "content": "用户住在新宿区附近", "importance": 0.5, "privacy_level": "internal"},
+                {"type": "preference", "content": "用户银行账户尾号1234", "importance": 0.5, "privacy_level": "sensitive"},
+                {"type": "preference", "content": "用户保险柜密码是8842", "importance": 0.5, "privacy_level": "secret"},
             ]
         )
         engine._extractor = mock
@@ -715,10 +715,10 @@ class TestExtractAndStore:
 
         all_facts = engine.list_facts()
         privacy_map = {f.content: f.privacy_level for f in all_facts}
-        assert privacy_map["public info"] == "public"
-        assert privacy_map["internal info"] == "private"
-        assert privacy_map["sensitive info"] == "sensitive"
-        assert privacy_map["secret info"] == "sensitive"
+        assert privacy_map["用户喜欢去公园散步"] == "public"
+        assert privacy_map["用户住在新宿区附近"] == "private"
+        assert privacy_map["用户银行账户尾号1234"] == "sensitive"
+        assert privacy_map["用户保险柜密码是8842"] == "sensitive"
 
     def test_extract_session_id(self, engine):
         """提取的事实记录 source_session_id."""
@@ -998,7 +998,7 @@ class TestGetSnapshot:
             facts=[
                 {
                     "type": "fact",
-                    "content": "会话1的记忆",
+                    "content": "用户在这周学会了弹吉他",
                     "importance": 0.5,
                     "privacy_level": "internal",
                 }
@@ -1014,7 +1014,7 @@ class TestGetSnapshot:
             facts=[
                 {
                     "type": "fact",
-                    "content": "其他会话的记忆",
+                    "content": "用户上周去了北海道滑雪",
                     "importance": 0.5,
                     "privacy_level": "internal",
                 }
@@ -1030,8 +1030,8 @@ class TestGetSnapshot:
         )
 
         transient_contents = {f.content for f in snapshot.transient_facts}
-        assert "会话1的记忆" in transient_contents
-        assert "其他会话的记忆" not in transient_contents
+        assert "用户在这周学会了弹吉他" in transient_contents
+        assert "用户上周去了北海道滑雪" not in transient_contents
 
     def test_snapshot_empty_database(self, engine):
         """空数据库返回空快照."""

@@ -210,8 +210,8 @@ async def list_skills(user_id: str = Depends(get_current_user)):
 
 
 @router.post("")
-async def create_skill(skill_data: dict):
-    """创建新技能（写入 SKILL.md 文件）."""
+async def create_skill(skill_data: dict, user_id: str = Depends(get_current_user)):
+    """创建新技能（写入 per-user SKILL.md 文件）."""
     name = skill_data.get("name", "").strip()
     if not name:
         return {"ok": False, "error": "技能名称为必填项"}
@@ -223,8 +223,8 @@ async def create_skill(skill_data: dict):
     # 生成安全的目录名
     dir_name = re.sub(r"[^\w\-]", "-", name.lower()).strip("-") or "skill"
 
-    # 写入到 ~/.hermes/skills/<category>/<dir_name>/SKILL.md
-    target_dir = Path(os.path.expanduser(f"~/.hermes/skills/{category}/{dir_name}"))
+    # 写入到 ~/.hermes/skills/<user_id>/<category>/<dir_name>/SKILL.md（per-user 隔离）
+    target_dir = Path(os.path.expanduser(f"~/.hermes/skills/{user_id}/{category}/{dir_name}"))
     target_dir.mkdir(parents=True, exist_ok=True)
 
     yaml_front = (
@@ -241,19 +241,18 @@ async def create_skill(skill_data: dict):
 
 
 @router.put("/{skill_id}")
-async def update_skill(skill_id: str, skill_data: dict):
-    """更新技能 SKILL.md."""
-    # 递归搜索找到对应的 SKILL.md
+async def update_skill(skill_id: str, skill_data: dict, user_id: str = Depends(get_current_user)):
+    """更新技能 SKILL.md（仅允许编辑用户自己的技能）."""
+    # 先检查是否为用户自定义技能（per-user 目录）
+    user_skills_dir = Path(os.path.expanduser(f"~/.hermes/skills/{user_id}"))
     md_path = None
-    for skills_dir in _SKILLS_DIRS:
-        for candidate in skills_dir.rglob(f"{skill_id}/SKILL.md"):
+    if user_skills_dir.is_dir():
+        for candidate in user_skills_dir.rglob(f"{skill_id}/SKILL.md"):
             md_path = candidate
-            break
-        if md_path:
             break
 
     if not md_path:
-        return {"ok": False, "error": "技能不存在"}
+        return {"ok": False, "error": "技能不存在或为内置技能，不可编辑"}
 
     name = skill_data.get("name", "").strip()
     description = skill_data.get("description", "").strip()
@@ -276,15 +275,17 @@ async def update_skill(skill_id: str, skill_data: dict):
 
 
 @router.delete("/{skill_id}")
-async def delete_skill(skill_id: str):
-    """删除技能（删除对应目录）."""
+async def delete_skill(skill_id: str, user_id: str = Depends(get_current_user)):
+    """删除技能（仅允许删除用户自己的技能）."""
     import shutil
-    for skills_dir in _SKILLS_DIRS:
-        for candidate in skills_dir.rglob(skill_id):
+    # 只允许删除 per-user 目录下的技能
+    user_skills_dir = Path(os.path.expanduser(f"~/.hermes/skills/{user_id}"))
+    if user_skills_dir.is_dir():
+        for candidate in user_skills_dir.rglob(skill_id):
             if candidate.is_dir() and (candidate / "SKILL.md").exists():
                 shutil.rmtree(candidate)
                 return {"ok": True}
-    return {"ok": False, "error": "技能不存在"}
+    return {"ok": False, "error": "技能不存在或为内置技能，不可删除"}
 
 
 @router.post("/batch/delete")

@@ -346,12 +346,23 @@ async def create_resource_skill(request: CreateSkillRequest, user_id: str = Depe
 
 @router.put("/skills/{skill_id}")
 async def update_resource_skill(skill_id: str, request: UpdateSkillRequest, user_id: str = Depends(get_current_user)):
-    """更新技能 — 可更新 name/description/content/category.
+    """更新技能 — 仅允许编辑用户自定义技能（scope=user），内置技能不可编辑.
 
     如果更新 category，会移动目录。
     """
     skill_dir = _skill_dir(skill_id)
     md_file = skill_dir / "SKILL.md"
+
+    # ── 安全检查：内置技能不可编辑 ──
+    # 内置技能位于全局目录（如 profiles/*/skills），用户技能在 ~/.hermes/skills/{user_id}/...
+    user_skills_base = _get_write_dir() / user_id
+    try:
+        skill_dir.resolve().relative_to(user_skills_base.resolve())
+    except ValueError:
+        raise HTTPException(
+            status_code=403,
+            detail={"ok": False, "error": "内置技能不可编辑，仅用户自定义技能可编辑"},
+        )
 
     # 读取现有内容 + frontmatter
     current_content = md_file.read_text(encoding="utf-8")
@@ -499,23 +510,17 @@ async def export_resource_skills(request: ExportSkillsRequest):
 
 
 @router.post("/skills/import")
-async def import_resource_skills(file: UploadFile):
-    """导入技能 — 上传 .md 或 .json(批量) 或 .zip.
-
-    文件类型检测：
-    - .md: 单个技能，从文件名推断 skill_id，从内容解析 frontmatter
-    - .json: 批量导入 [{name, description, content, category?}, ...]
-    - .zip: 解压后按目录结构导入
-    """
+async def import_resource_skills(file: UploadFile, user_id: str = Depends(get_current_user)):
+    """导入技能 — 上传 .md 或 .json(批量) 或 .zip，写入用户专属目录."""
     if not file.filename:
         raise HTTPException(status_code=400, detail={"ok": False, "error": "No file provided"})
 
     raw = await file.read()
     filename = file.filename.lower()
     imported: list[str] = []
+    user_base = _get_write_dir() / user_id
 
     if filename.endswith(".zip"):
-        # ZIP 批量导入
         zip_buffer = BytesIO(raw)
         with ZipFile(zip_buffer, "r") as zf:
             for member in zf.namelist():
@@ -526,14 +531,13 @@ async def import_resource_skills(file: UploadFile):
                     continue
                 skill_id = parts[0]
                 rel_path = "/".join(parts[1:])
-                target = _get_write_dir() / skill_id / rel_path
+                target = user_base / skill_id / rel_path
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(zf.read(member))
                 if skill_id not in imported:
                     imported.append(skill_id)
 
     elif filename.endswith(".json"):
-        # JSON 批量导入
         data = json.loads(raw.decode("utf-8"))
         if isinstance(data, dict):
             data = [data]
@@ -541,9 +545,9 @@ async def import_resource_skills(file: UploadFile):
             skill_id = item["name"].lower().replace(" ", "-").replace("_", "-")
             category = item.get("category", "")
             if category:
-                target_dir = _get_write_dir() / category / skill_id
+                target_dir = user_base / category / skill_id
             else:
-                target_dir = _get_write_dir() / skill_id
+                target_dir = user_base / skill_id
             target_dir.mkdir(parents=True, exist_ok=True)
             md_content = _build_skill_md(
                 name=item["name"],
@@ -555,16 +559,15 @@ async def import_resource_skills(file: UploadFile):
             imported.append(skill_id)
 
     elif filename.endswith(".md"):
-        # 单个 .md 导入
         content = raw.decode("utf-8")
         fm = _parse_frontmatter(content)
         name = fm.get("name", file.filename.replace(".md", ""))
         skill_id = name.lower().replace(" ", "-").replace("_", "-")
         category = fm.get("category", "")
         if category:
-            target_dir = _get_write_dir() / category / skill_id
+            target_dir = user_base / category / skill_id
         else:
-            target_dir = _get_write_dir() / skill_id
+            target_dir = user_base / skill_id
         target_dir.mkdir(parents=True, exist_ok=True)
         _write_file_sync(target_dir / "SKILL.md", content)
         imported.append(skill_id)
@@ -585,11 +588,8 @@ async def import_resource_skills(file: UploadFile):
 
 
 @router.post("/skills/import/json")
-async def import_resource_skills_json(request: dict):
-    """通过 JSON body 批量导入技能.
-
-    请求体: {"skills": [{"name": "...", "description": "...", "content": "..."}, ...]}
-    """
+async def import_resource_skills_json(request: dict, user_id: str = Depends(get_current_user)):
+    """通过 JSON body 批量导入技能到用户专属目录."""
     items = request.get("skills", [])
     if not items:
         raise HTTPException(
@@ -598,14 +598,15 @@ async def import_resource_skills_json(request: dict):
         )
 
     imported: list[str] = []
+    user_base = _get_write_dir() / user_id
     for item in items:
         name = item.get("name", "unnamed")
         skill_id = name.lower().replace(" ", "-").replace("_", "-")
         category = item.get("category", "")
         if category:
-            target_dir = _get_write_dir() / category / skill_id
+            target_dir = user_base / category / skill_id
         else:
-            target_dir = _get_write_dir() / skill_id
+            target_dir = user_base / skill_id
         target_dir.mkdir(parents=True, exist_ok=True)
         md_content = _build_skill_md(
             name=name,

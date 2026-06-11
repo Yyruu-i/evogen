@@ -153,6 +153,14 @@ class RegisterToolRequest(BaseModel):
     parameters: dict = Field(default_factory=dict, description="参数 schema")
 
 
+class UpdateToolRequest(BaseModel):
+    name: Optional[str] = Field(None, description="工具名称")
+    description: Optional[str] = Field(None, description="工具描述")
+    endpoint: Optional[str] = Field(None, description="工具端点/命令")
+    category: Optional[str] = Field(None, description="工具分类")
+    parameters: Optional[dict] = Field(None, description="参数 schema")
+
+
 class ExportExperienceRequest(BaseModel):
     trajectory_ids: Optional[list[str]] = Field(None, description="要导出的轨迹 ID（None=全部）")
     format: str = Field("json", description="导出格式: json / zip")
@@ -624,14 +632,42 @@ async def import_resource_skills_json(request: dict, user_id: str = Depends(get_
 # GET /api/v1/resource/tools — 列出工具
 # ════════════════════════════════════════════════════════
 
+# ── 内置工具定义（全局共享，所有用户可见，不可编辑/删除）──
+_BUILTIN_TOOLS: list[dict] = [
+    {
+        "id": "builtin_web_search",
+        "name": "web_search",
+        "description": "搜索互联网获取实时信息",
+        "endpoint": "/api/v1/agent/search",
+        "category": "联网",
+        "parameters": {"query": "string", "limit": "int"},
+        "scope": "builtin",
+        "created_at": "2025-01-01T00:00:00+00:00",
+    },
+    {
+        "id": "builtin_browser",
+        "name": "browser",
+        "description": "打开网页、截图、点击元素",
+        "endpoint": "/api/v1/browser",
+        "category": "浏览器",
+        "parameters": {},
+        "scope": "builtin",
+        "created_at": "2025-01-01T00:00:00+00:00",
+    },
+]
+
 
 @router.get("/tools")
 async def list_resource_tools(user_id: str = Depends(get_current_user)):
-    """列出当前用户的工具注册表."""
+    """列出工具：内置工具（全局共享）+ 用户自定义工具（隔离）."""
     registry = _load_tools_registry()
     all_tools = registry.get("tools", {})
     user_tools = list(all_tools.get(user_id, {}).values())
-    return {"ok": True, "data": {"tools": user_tools, "total": len(user_tools)}}
+    # 标记用户工具 scope
+    for t in user_tools:
+        t["scope"] = "user"
+    # 内置工具 + 用户工具合并
+    return {"ok": True, "data": {"tools": _BUILTIN_TOOLS + user_tools, "total": len(_BUILTIN_TOOLS) + len(user_tools)}}
 
 
 # ════════════════════════════════════════════════════════
@@ -655,6 +691,7 @@ async def register_resource_tool(request: RegisterToolRequest, user_id: str = De
         "category": request.category,
         "parameters": request.parameters,
         "user_id": user_id,
+        "scope": "user",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -666,13 +703,63 @@ async def register_resource_tool(request: RegisterToolRequest, user_id: str = De
 
 
 # ════════════════════════════════════════════════════════
+# PUT /api/v1/resource/tools/{tool_id} — 编辑工具
+# ════════════════════════════════════════════════════════
+
+
+@router.put("/tools/{tool_id}")
+async def update_resource_tool(tool_id: str, request: UpdateToolRequest, user_id: str = Depends(get_current_user)):
+    """编辑工具 — 仅允许编辑用户自定义工具（scope=user），内置工具不可编辑."""
+    # 拒绝编辑内置工具
+    if tool_id.startswith("builtin_"):
+        raise HTTPException(
+            status_code=403,
+            detail={"ok": False, "error": "内置工具不可编辑，仅用户自定义工具可编辑"},
+        )
+
+    registry = _load_tools_registry()
+    all_tools = registry.get("tools", {})
+    user_tools = all_tools.get(user_id, {})
+
+    if tool_id not in user_tools:
+        raise HTTPException(
+            status_code=404,
+            detail={"ok": False, "error": f"Tool not found: {tool_id}"},
+        )
+
+    tool = user_tools[tool_id]
+    if request.name is not None:
+        tool["name"] = request.name
+    if request.description is not None:
+        tool["description"] = request.description
+    if request.endpoint is not None:
+        tool["endpoint"] = request.endpoint
+    if request.category is not None:
+        tool["category"] = request.category
+    if request.parameters is not None:
+        tool["parameters"] = request.parameters
+
+    _save_tools_registry(registry)
+
+    logger.info(f"Tool updated: {tool['name']} (id={tool_id}, user={user_id})")
+    return {"ok": True, "data": tool}
+
+
+# ════════════════════════════════════════════════════════
 # DELETE /api/v1/resource/tools/{tool_id} — 删除工具
 # ════════════════════════════════════════════════════════
 
 
 @router.delete("/tools/{tool_id}")
 async def delete_resource_tool(tool_id: str, user_id: str = Depends(get_current_user)):
-    """从当前用户的工具注册表中删除工具."""
+    """删除工具 — 仅允许删除用户自定义工具，内置工具不可删除."""
+    # 拒绝删除内置工具
+    if tool_id.startswith("builtin_"):
+        raise HTTPException(
+            status_code=403,
+            detail={"ok": False, "error": "内置工具不可删除"},
+        )
+
     registry = _load_tools_registry()
     all_tools = registry.get("tools", {})
     user_tools = all_tools.get(user_id, {})

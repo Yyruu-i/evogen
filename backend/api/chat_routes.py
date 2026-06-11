@@ -213,7 +213,7 @@ async def _build_system_prompt(session_id: str, user_message: str) -> str:
     return "\n".join(parts)
 
 
-async def _record_experience(session_id: str, user_message: str, assistant_response: str):
+async def _record_experience(session_id: str, user_message: str, assistant_response: str, user_id: str = "default"):
     """记录对话经验轨迹 + 自动提取偏好 (Fix 3)."""
     try:
         from backend.experience.recorder import (
@@ -249,6 +249,7 @@ async def _record_experience(session_id: str, user_message: str, assistant_respo
             turns=turns,
             outcome=outcome,
             session_title=session_title,
+            user_id=user_id,
         )
         logger.debug(f"Experience trajectory recorded for session={session_id} title='{session_title}'")
 
@@ -346,7 +347,7 @@ def _load_recent_messages(session_id: str, max_messages: int = 20) -> list[dict]
 # ════════════════════════════════════════════════════════
 
 
-async def _execute_tool(tool_name: str, arguments: dict, session_id: str) -> str:
+async def _execute_tool(tool_name: str, arguments: dict, session_id: str, user_id: str = "default") -> str:
     """执行浏览器工具调用，返回结果文本。所有操作自动允许，无需用户确认。"""
     from backend.tools import get_browser_agent
 
@@ -397,6 +398,7 @@ async def _execute_tool(tool_name: str, arguments: dict, session_id: str) -> str
                 f"截图_{snap.title or '页面'}",
                 f"data:image/png;base64,{b64_data}",
                 session_id=session_id,
+                user_id=user_id,
             )
             logger.info("Screenshot artifact stored: %s", artifact_id)
 
@@ -535,7 +537,7 @@ async def _tool_loop_stream_generator(
                 yield f"data: {json.dumps({'status': 'tool_start', 'tool': tool_name, 'args': tool_args})}\n\n"
 
                 # 执行工具
-                tool_result = await _execute_tool(tool_name, tool_args, session_id)
+                tool_result = await _execute_tool(tool_name, tool_args, session_id, user_id=user_id)
 
                 # 保存工具调用和结果到数据库
                 _save_message(session_id, "system",
@@ -589,7 +591,7 @@ async def _tool_loop_stream_generator(
     # 保存助手回复并记录经验
     if full_text_response:
         _save_message(session_id, "assistant", full_text_response)
-        await _record_experience(session_id, original_message, full_text_response)
+        await _record_experience(session_id, original_message, full_text_response, user_id=user_id)
 
         # ── 自动提取制品（代码块 / 文档 / 表格）──
         try:

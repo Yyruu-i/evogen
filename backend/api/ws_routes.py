@@ -26,7 +26,7 @@ async def _handle_connect(ws: WebSocket, data: dict) -> str | None:
         user_id 如果验证成功；否则发送错误帧并返回 None。
     """
     params = data.get("params", {})
-    token = params.get("token", "")
+    token = params.get("token") or (params.get("auth") or {}).get("token", "")
 
     if not token:
         await ws.send_json({

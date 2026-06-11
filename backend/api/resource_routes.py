@@ -215,7 +215,7 @@ def _build_skill_md(name: str, description: str, category: str, content: str) ->
     return f"---\n{fm_yaml}\n---\n\n{content}"
 
 
-def _skill_to_dict(skill_id: str, md_path: Path) -> dict:
+def _skill_to_dict(skill_id: str, md_path: Path, scope: str = "builtin") -> dict:
     """将技能文件转为 API 友好字典."""
     content = md_path.read_text(encoding="utf-8")
     fm = _parse_frontmatter(content)
@@ -227,6 +227,7 @@ def _skill_to_dict(skill_id: str, md_path: Path) -> dict:
         "description": fm.get("description", ""),
         "category": fm.get("category", ""),
         "version": fm.get("version", "1.0.0"),
+        "scope": scope,
         "created_at": created_at,
         "file_size": len(content),
     }
@@ -254,17 +255,21 @@ async def list_resource_skills(user_id: str = Depends(get_current_user)):
 
             # 用户隔离：检查技能路径是否属于其他用户的子目录
             # 路径如 ~/.hermes/skills/{user_id}/... 表示用户自定义技能
+            is_user_skill = False
             try:
                 rel = md.parent.relative_to(sd)
                 parts = rel.parts
                 if len(parts) >= 2 and parts[0] != user_id:
                     # 该技能属于其他用户的子目录，跳过
                     continue
+                if len(parts) >= 2 and parts[0] == user_id:
+                    is_user_skill = True
             except ValueError:
                 pass
 
             seen.add(skill_id)
-            skills.append(_skill_to_dict(skill_id, md))
+            scope = "user" if is_user_skill else "builtin"
+            skills.append(_skill_to_dict(skill_id, md, scope=scope))
     return {"ok": True, "data": {"skills": skills, "total": len(skills)}}
 
 

@@ -11,7 +11,7 @@ export default defineConfig({
     port: 5174,
     proxy: {
       '/api': 'http://localhost:8100',
-      '/ws': { target: 'ws://localhost:8100', ws: true },
+      '/api/v1/ws': { target: 'ws://localhost:8100', ws: true },
     },
   },
 })

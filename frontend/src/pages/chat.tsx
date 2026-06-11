@@ -51,7 +51,7 @@ export function ChatPage() {
 
   useEffect(() => {
     const ws = new EvoGenWS(
-      `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`,
+      `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/v1/ws`,
     );
     wsRef.current = ws;
     ws.onStatus(setWsStatus);

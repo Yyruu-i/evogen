@@ -174,7 +174,7 @@ def _save_message(session_id: str, role: str, content: str):
     db.commit()
 
 
-async def _build_system_prompt(session_id: str, user_message: str) -> str:
+async def _build_system_prompt(session_id: str, user_message: str, user_id: str) -> str:
     """构建完整的 system prompt，注入人格 + 记忆上下文."""
     parts: list[str] = []
 
@@ -184,17 +184,17 @@ async def _build_system_prompt(session_id: str, user_message: str) -> str:
         "## 对话上下文规则\n"
         "用户可能使用省略主语/宾语的短句（如'地址'、'在哪'、'价格呢'），"
         "你必须关联前几轮对话历史来理解省略的部分。"
-        "如果上几轮在讨论某家医院，用户说'地址'就是在问那家医院的地址。"
+        "如果上几轮在讨论某家医院，用户说'地址'就是在问那家医院的地址。\n"
     )
 
     # ── 人格注入 (Fix 1) ──
     try:
         from backend.persona.engine import get_engine as get_persona_engine
-        persona_engine = get_persona_engine()
+        persona_engine = get_persona_engine(user_id=user_id)
         persona_injection = await persona_engine.get_prompt_injection()
         if persona_injection:
             parts.append("\n" + persona_injection)
-            logger.debug("Persona injection added to system prompt")
+            logger.debug(f"Persona injection added to system prompt for user={user_id}")
     except Exception as e:
         logger.warning(f"Failed to inject persona: {e}")
 
@@ -202,7 +202,7 @@ async def _build_system_prompt(session_id: str, user_message: str) -> str:
     try:
         from backend.memory.engine import get_engine as get_memory_engine
         memory_engine = get_memory_engine()
-        snapshot = memory_engine.get_snapshot(session_id, user_message)
+        snapshot = memory_engine.get_snapshot(session_id, user_message, user_id=user_id)
         memory_text = memory_engine.format_snapshot(snapshot)
         if memory_text:
             parts.append("\n" + memory_text)
@@ -262,23 +262,23 @@ async def _record_experience(session_id: str, user_message: str, assistant_respo
             logger.warning(f"Failed to extract memory facts: {e}")
 
         # ── 自动提取用户偏好 (Fix 3) ──
-        _auto_extract_preferences(user_message, assistant_response)
+        _auto_extract_preferences(user_message, assistant_response, user_id=user_id)
 
     except Exception as e:
         logger.warning(f"Failed to record experience: {e}")
 
 
-def _auto_extract_preferences(user_message: str, assistant_response: str):
+def _auto_extract_preferences(user_message: str, assistant_response: str, user_id: str = "default"):
     """从对话中自动提取用户偏好并写入 persona 偏好表.
 
-    识别模式如「我喜欢…」「我习惯…」「我偏好…」「我最讨厌…」等。
-    合并写入 learned_preferences JSON 字段，保留已有偏好。
+    识别模式如「我喜欢…」「我习惯…」「我偏好…」「我最讨厌…」等.
+    合并写入 learned_preferences JSON 字段，保留已有偏好.
     """
     import re
 
     try:
         from backend.persona.engine import get_engine as get_persona_engine
-        persona = get_persona_engine()
+        persona = get_persona_engine(user_id=user_id)
 
         # 在用户消息中匹配偏好表达
         combined = user_message + "\n" + assistant_response
@@ -676,7 +676,7 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
         return
 
     # ── 构建 system prompt（含人格 + 记忆 + 搜索上下文 + 工具说明） ──
-    system_prompt = await _build_system_prompt(session_id, message)
+    system_prompt = await _build_system_prompt(session_id, message, user_id)
     system_prompt = build_search_augmented_prompt(system_prompt, message, search_context)
 
     # 注入工具使用说明

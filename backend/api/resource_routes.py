@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from backend.auth.dependencies import get_current_user
+from backend.auth.dependencies import get_current_user as get_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -253,7 +253,7 @@ def _skill_to_dict(skill_id: str, md_path: Path, scope: str = "builtin") -> dict
 
 
 @router.get("/skills")
-async def list_resource_skills(user_id: str = Depends(get_current_user)):
+async def list_resource_skills(user_id: str = Depends(get_user_id)):
     """列出所有技能目录下的技能（多源扫描，去重，按用户隔离）."""
     seen: set[str] = set()
     skills = []
@@ -306,7 +306,7 @@ async def list_resource_skills(user_id: str = Depends(get_current_user)):
 
 
 @router.get("/skills/{skill_id}")
-async def get_resource_skill(skill_id: str, user_id: str = Depends(get_current_user)):
+async def get_resource_skill(skill_id: str, user_id: str = Depends(get_user_id)):
     """获取单个技能的完整内容."""
     skill_dir = _skill_dir(skill_id)
     md_file = skill_dir / "SKILL.md"
@@ -332,7 +332,7 @@ async def get_resource_skill(skill_id: str, user_id: str = Depends(get_current_u
 
 
 @router.post("/skills", status_code=201)
-async def create_resource_skill(request: CreateSkillRequest, user_id: str = Depends(get_current_user)):
+async def create_resource_skill(request: CreateSkillRequest, user_id: str = Depends(get_user_id)):
     """创建新技能 — 在用户专属目录下创建 ~/.hermes/skills/{user_id}/SKILL.md."""
     # 生成安全 ID
     skill_id = request.name.lower().replace(" ", "-").replace("_", "-")
@@ -377,7 +377,7 @@ async def create_resource_skill(request: CreateSkillRequest, user_id: str = Depe
 
 
 @router.put("/skills/{skill_id}")
-async def update_resource_skill(skill_id: str, request: UpdateSkillRequest, user_id: str = Depends(get_current_user)):
+async def update_resource_skill(skill_id: str, request: UpdateSkillRequest, user_id: str = Depends(get_user_id)):
     """更新技能 — 仅允许编辑用户自定义技能（scope=user），内置技能不可编辑.
 
     如果更新 category，会移动目录。
@@ -475,7 +475,7 @@ def _delete_skill_by_id(skill_id: str, user_id: str = "default") -> bool:
 
 
 @router.delete("/skills/{skill_id}")
-async def delete_resource_skill(skill_id: str, user_id: str = Depends(get_current_user)):
+async def delete_resource_skill(skill_id: str, user_id: str = Depends(get_user_id)):
     """删除技能 — 移除整个技能目录（仅限用户自有技能）."""
     # 先做 scope 检查
     skill_dir = _skill_dir(skill_id)
@@ -504,7 +504,7 @@ async def delete_resource_skill(skill_id: str, user_id: str = Depends(get_curren
 
 
 @router.post("/skills/batch-delete")
-async def batch_delete_resource_skills(request: BatchDeleteRequest, user_id: str = Depends(get_current_user)):
+async def batch_delete_resource_skills(request: BatchDeleteRequest, user_id: str = Depends(get_user_id)):
     """批量删除技能.
 
     请求体: {"skill_ids": ["skill-a", "skill-b", ...]}
@@ -599,7 +599,7 @@ async def export_resource_skills(request: ExportSkillsRequest):
 
 
 @router.post("/skills/import")
-async def import_resource_skills(file: UploadFile, user_id: str = Depends(get_current_user)):
+async def import_resource_skills(file: UploadFile, user_id: str = Depends(get_user_id)):
     """导入技能 — 上传 .md 或 .json(批量) 或 .zip，写入用户专属目录."""
     if not file.filename:
         raise HTTPException(status_code=400, detail={"ok": False, "error": "No file provided"})
@@ -678,7 +678,7 @@ async def import_resource_skills(file: UploadFile, user_id: str = Depends(get_cu
 
 
 @router.post("/skills/import/json")
-async def import_resource_skills_json(request: dict, user_id: str = Depends(get_current_user)):
+async def import_resource_skills_json(request: dict, user_id: str = Depends(get_user_id)):
     """通过 JSON body 批量导入技能到用户专属目录."""
     items = request.get("skills", [])
     if not items:
@@ -741,7 +741,7 @@ _BUILTIN_TOOLS: list[dict] = [
 
 
 @router.get("/tools")
-async def list_resource_tools(user_id: str = Depends(get_current_user)):
+async def list_resource_tools(user_id: str = Depends(get_user_id)):
     """列出工具：内置工具（全局共享）+ 用户自定义工具（隔离）."""
     registry = _load_tools_registry()
     all_tools = registry.get("tools", {})
@@ -759,7 +759,7 @@ async def list_resource_tools(user_id: str = Depends(get_current_user)):
 
 
 @router.post("/tools", status_code=201)
-async def register_resource_tool(request: RegisterToolRequest, user_id: str = Depends(get_current_user)):
+async def register_resource_tool(request: RegisterToolRequest, user_id: str = Depends(get_user_id)):
     """注册新工具到用户专属工具注册表."""
     registry = _load_tools_registry()
     all_tools = registry.setdefault("tools", {})
@@ -791,7 +791,7 @@ async def register_resource_tool(request: RegisterToolRequest, user_id: str = De
 
 
 @router.put("/tools/{tool_id}")
-async def update_resource_tool(tool_id: str, request: UpdateToolRequest, user_id: str = Depends(get_current_user)):
+async def update_resource_tool(tool_id: str, request: UpdateToolRequest, user_id: str = Depends(get_user_id)):
     """编辑工具 — 仅允许编辑用户自定义工具（scope=user），内置工具不可编辑."""
     # 拒绝编辑内置工具（scope=builtin）
     if tool_id.startswith("builtin_"):
@@ -834,7 +834,7 @@ async def update_resource_tool(tool_id: str, request: UpdateToolRequest, user_id
 
 
 @router.delete("/tools/{tool_id}")
-async def delete_resource_tool(tool_id: str, user_id: str = Depends(get_current_user)):
+async def delete_resource_tool(tool_id: str, user_id: str = Depends(get_user_id)):
     """删除工具 — 仅允许删除用户自定义工具，内置工具不可删除."""
     # 拒绝删除内置工具（scope=builtin）
     if tool_id.startswith("builtin_"):

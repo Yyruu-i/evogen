@@ -210,32 +210,38 @@ def _parse_frontmatter(md_content: str) -> dict:
         return {}
 
 
-def _build_skill_md(name: str, description: str, category: str, content: str) -> str:
+def _build_skill_md(name: str, description: str, category: str, content: str, user_id: str = "") -> str:
     """构建带 frontmatter 的 SKILL.md."""
     fm = {
         "name": name,
         "description": description,
         "version": "1.0.0",
+        "scope": "user",
     }
     if category:
         fm["category"] = category
+    if user_id:
+        fm["user_id"] = user_id
     fm_yaml = yaml.dump(fm, allow_unicode=True, default_flow_style=False).strip()
     return f"---\n{fm_yaml}\n---\n\n{content}"
 
 
 def _skill_to_dict(skill_id: str, md_path: Path, scope: str = "builtin") -> dict:
-    """将技能文件转为 API 友好字典."""
+    """将技能文件转为 API 友好字典 — scope 优先从前置元数据读取."""
     content = md_path.read_text(encoding="utf-8")
     fm = _parse_frontmatter(content)
     mtime = md_path.stat().st_mtime
     created_at = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
+    # 优先从前置元数据读取 scope，没有则回退到参数
+    resolved_scope = fm.get("scope", scope)
     return {
         "id": skill_id,
         "name": fm.get("name", skill_id),
         "description": fm.get("description", ""),
         "category": fm.get("category", ""),
         "version": fm.get("version", "1.0.0"),
-        "scope": scope,
+        "scope": resolved_scope,
+        "user_id": fm.get("user_id", ""),
         "created_at": created_at,
         "file_size": len(content),
     }
@@ -261,22 +267,35 @@ async def list_resource_skills(user_id: str = Depends(get_current_user)):
             if skill_id in seen:
                 continue
 
-            # 用户隔离：检查技能路径是否属于其他用户的子目录
-            # 路径如 ~/.hermes/skills/{user_id}/... 表示用户自定义技能
-            is_user_skill = False
+            # 读取前置元数据确定 scope 和 user_id
             try:
-                rel = md.parent.relative_to(sd)
-                parts = rel.parts
-                if len(parts) >= 2 and parts[0] != user_id:
-                    # 该技能属于其他用户的子目录，跳过
+                fm = _parse_frontmatter(md.read_text(encoding="utf-8"))
+            except Exception:
+                fm = {}
+
+            fm_scope = fm.get("scope", "")
+            fm_user_id = fm.get("user_id", "")
+
+            if fm_scope:
+                # 有明确 scope 元数据 — 直接使用，按 user_id 过滤
+                if fm_scope == "user" and fm_user_id and fm_user_id != user_id:
                     continue
-                if len(parts) >= 2 and parts[0] == user_id:
-                    is_user_skill = True
-            except ValueError:
-                pass
+                scope = fm_scope
+            else:
+                # 回退到路径推断（兼容旧数据）
+                is_user_skill = False
+                try:
+                    rel = md.parent.relative_to(sd)
+                    parts = rel.parts
+                    if len(parts) >= 2 and parts[0] != user_id:
+                        continue
+                    if len(parts) >= 2 and parts[0] == user_id:
+                        is_user_skill = True
+                except ValueError:
+                    pass
+                scope = "user" if is_user_skill else "builtin"
 
             seen.add(skill_id)
-            scope = "user" if is_user_skill else "builtin"
             skills.append(_skill_to_dict(skill_id, md, scope=scope))
     return {"ok": True, "data": {"skills": skills, "total": len(skills)}}
 
@@ -292,14 +311,18 @@ async def get_resource_skill(skill_id: str, user_id: str = Depends(get_current_u
     skill_dir = _skill_dir(skill_id)
     md_file = skill_dir / "SKILL.md"
     content = md_file.read_text(encoding="utf-8")
-    # 确定 scope：检查是否在用户子目录下
-    scope = "builtin"
-    try:
-        write_dir = _get_write_dir()
-        md_file.resolve().relative_to((write_dir / user_id).resolve())
-        scope = "user"
-    except ValueError:
-        pass
+    # 从前置元数据读取 scope，回退到路径推断
+    fm = _parse_frontmatter(content)
+    scope = fm.get("scope", "")
+    if not scope:
+        # 回退到路径推断（兼容旧数据）
+        scope = "builtin"
+        try:
+            write_dir = _get_write_dir()
+            md_file.resolve().relative_to((write_dir / user_id).resolve())
+            scope = "user"
+        except ValueError:
+            pass
     return {"ok": True, "data": {"skill": _skill_to_dict(skill_id, md_file, scope=scope), "content": content}}
 
 
@@ -335,6 +358,7 @@ async def create_resource_skill(request: CreateSkillRequest, user_id: str = Depe
         description=request.description,
         category=request.category,
         content=request.content,
+        user_id=user_id,
     )
 
     md_file = target_dir / "SKILL.md"
@@ -361,20 +385,34 @@ async def update_resource_skill(skill_id: str, request: UpdateSkillRequest, user
     skill_dir = _skill_dir(skill_id)
     md_file = skill_dir / "SKILL.md"
 
-    # ── 安全检查：内置技能不可编辑 ──
-    # 内置技能位于全局目录（如 profiles/*/skills），用户技能在 ~/.hermes/skills/{user_id}/...
-    user_skills_base = _get_write_dir() / user_id
-    try:
-        skill_dir.resolve().relative_to(user_skills_base.resolve())
-    except ValueError:
-        raise HTTPException(
-            status_code=403,
-            detail={"ok": False, "error": "内置技能不可编辑，仅用户自定义技能可编辑"},
-        )
-
     # 读取现有内容 + frontmatter
     current_content = md_file.read_text(encoding="utf-8")
     fm = _parse_frontmatter(current_content)
+
+    # ── 安全检查：内置技能不可编辑 ──
+    scope = fm.get("scope", "")
+    if scope == "builtin":
+        raise HTTPException(
+            status_code=403,
+            detail={"ok": False, "error": "内置技能（scope=builtin）不可编辑，仅用户自定义技能可编辑"},
+        )
+    if not scope:
+        # 回退到路径推断（兼容旧数据）
+        user_skills_base = _get_write_dir() / user_id
+        try:
+            skill_dir.resolve().relative_to(user_skills_base.resolve())
+        except ValueError:
+            raise HTTPException(
+                status_code=403,
+                detail={"ok": False, "error": "内置技能不可编辑，仅用户自定义技能可编辑"},
+            )
+    # 检查 user_id 归属
+    fm_user_id = fm.get("user_id", "")
+    if fm_user_id and fm_user_id != user_id:
+        raise HTTPException(
+            status_code=403,
+            detail={"ok": False, "error": "无权编辑其他用户的技能"},
+        )
 
     # 提取 body（frontmatter 之后的内容，保留原始空白）
     body = ""
@@ -409,7 +447,7 @@ async def update_resource_skill(skill_id: str, request: UpdateSkillRequest, user
         skill_id = new_skill_id
 
     # 写入新内容（使用 fsync 确保落盘）
-    new_md = _build_skill_md(new_name, new_desc, new_category, new_body)
+    new_md = _build_skill_md(new_name, new_desc, new_category, new_body, user_id=user_id)
     _write_file_sync(md_file, new_md)
 
     logger.info(f"Skill updated: {skill_id}")
@@ -426,23 +464,40 @@ class BatchDeleteRequest(BaseModel):
 
 
 def _delete_skill_by_id(skill_id: str, user_id: str = "default") -> bool:
-    """删除用户的技能 — 仅从用户专属目录删除。返回是否成功."""
-    write_dir = _get_write_dir()
-    user_base = write_dir / user_id
-
-    # 扫描用户目录及其子目录
-    if user_base.exists():
-        for md in user_base.rglob("SKILL.md"):
-            if md.is_file() and md.parent.name == skill_id:
-                shutil.rmtree(str(md.parent))
-                logger.info(f"Skill deleted: {skill_id} from user={user_id}")
-                return True
-    return False
+    """删除技能文件（调用方已通过 scope 检查）。返回是否成功."""
+    try:
+        skill_dir = _skill_dir(skill_id)
+    except HTTPException:
+        return False
+    shutil.rmtree(str(skill_dir))
+    logger.info(f"Skill deleted: {skill_id} from user={user_id}")
+    return True
 
 
 @router.delete("/skills/{skill_id}")
 async def delete_resource_skill(skill_id: str, user_id: str = Depends(get_current_user)):
     """删除技能 — 移除整个技能目录（仅限用户自有技能）."""
+    # 先做 scope 检查
+    skill_dir = _skill_dir(skill_id)
+    md_file = skill_dir / "SKILL.md"
+    try:
+        fm = _parse_frontmatter(md_file.read_text(encoding="utf-8"))
+    except Exception:
+        fm = {}
+    scope = fm.get("scope", "")
+    if scope == "builtin":
+        raise HTTPException(status_code=403, detail={"ok": False, "error": "内置技能（scope=builtin）不可删除"})
+    if not scope:
+        # 回退到路径推断（兼容旧数据）
+        user_skills_base = _get_write_dir() / user_id
+        try:
+            skill_dir.resolve().relative_to(user_skills_base.resolve())
+        except ValueError:
+            raise HTTPException(status_code=403, detail={"ok": False, "error": "内置技能不可删除"})
+    fm_user_id = fm.get("user_id", "")
+    if fm_user_id and fm_user_id != user_id:
+        raise HTTPException(status_code=403, detail={"ok": False, "error": "无权删除其他用户的技能"})
+
     if not _delete_skill_by_id(skill_id, user_id=user_id):
         raise HTTPException(status_code=404, detail={"ok": False, "error": f"Skill not found: {skill_id}"})
     return {"ok": True, "data": {"deleted": skill_id}}
@@ -453,20 +508,46 @@ async def batch_delete_resource_skills(request: BatchDeleteRequest, user_id: str
     """批量删除技能.
 
     请求体: {"skill_ids": ["skill-a", "skill-b", ...]}
-    返回: {"ok": true, "data": {"deleted": [...], "not_found": [...], "total": N}}
+    返回: {"ok": true, "data": {"deleted": [...], "not_found": [...], "forbidden": [...], "total": N}}
     """
     deleted: list[str] = []
     not_found: list[str] = []
+    forbidden: list[str] = []
     for sid in request.skill_ids:
-        if _delete_skill_by_id(sid, user_id=user_id):
-            deleted.append(sid)
-        else:
+        # 先做 scope 检查
+        try:
+            skill_dir = _skill_dir(sid)
+            md_file = skill_dir / "SKILL.md"
+            try:
+                fm = _parse_frontmatter(md_file.read_text(encoding="utf-8"))
+            except Exception:
+                fm = {}
+            scope = fm.get("scope", "")
+            if scope == "builtin":
+                forbidden.append(sid)
+                continue
+            if not scope:
+                user_skills_base = _get_write_dir() / user_id
+                try:
+                    skill_dir.resolve().relative_to(user_skills_base.resolve())
+                except ValueError:
+                    forbidden.append(sid)
+                    continue
+            fm_user_id = fm.get("user_id", "")
+            if fm_user_id and fm_user_id != user_id:
+                not_found.append(sid)
+                continue
+            if _delete_skill_by_id(sid, user_id=user_id):
+                deleted.append(sid)
+            else:
+                not_found.append(sid)
+        except HTTPException:
             not_found.append(sid)
-    logger.info(f"Batch delete: {len(deleted)} deleted, {len(not_found)} not found")
-    return {
-        "ok": True,
-        "data": {"deleted": deleted, "not_found": not_found, "total": len(request.skill_ids)},
-    }
+    logger.info(f"Batch delete: {len(deleted)} deleted, {len(not_found)} not found, {len(forbidden)} forbidden")
+    result = {"deleted": deleted, "not_found": not_found, "total": len(request.skill_ids)}
+    if forbidden:
+        result["forbidden"] = forbidden
+    return {"ok": True, "data": result}
 
 
 # ════════════════════════════════════════════════════════
@@ -562,6 +643,7 @@ async def import_resource_skills(file: UploadFile, user_id: str = Depends(get_cu
                 description=item.get("description", ""),
                 category=category,
                 content=item.get("content", ""),
+                user_id=user_id,
             )
             _write_file_sync(target_dir / "SKILL.md", md_content)
             imported.append(skill_id)
@@ -621,6 +703,7 @@ async def import_resource_skills_json(request: dict, user_id: str = Depends(get_
             description=item.get("description", ""),
             category=category,
             content=item.get("content", ""),
+            user_id=user_id,
         )
         _write_file_sync(target_dir / "SKILL.md", md_content)
         imported.append(skill_id)
@@ -710,11 +793,11 @@ async def register_resource_tool(request: RegisterToolRequest, user_id: str = De
 @router.put("/tools/{tool_id}")
 async def update_resource_tool(tool_id: str, request: UpdateToolRequest, user_id: str = Depends(get_current_user)):
     """编辑工具 — 仅允许编辑用户自定义工具（scope=user），内置工具不可编辑."""
-    # 拒绝编辑内置工具
+    # 拒绝编辑内置工具（scope=builtin）
     if tool_id.startswith("builtin_"):
         raise HTTPException(
             status_code=403,
-            detail={"ok": False, "error": "内置工具不可编辑，仅用户自定义工具可编辑"},
+            detail={"ok": False, "error": "内置工具（scope=builtin）不可编辑，仅用户自定义工具可编辑"},
         )
 
     registry = _load_tools_registry()
@@ -753,11 +836,11 @@ async def update_resource_tool(tool_id: str, request: UpdateToolRequest, user_id
 @router.delete("/tools/{tool_id}")
 async def delete_resource_tool(tool_id: str, user_id: str = Depends(get_current_user)):
     """删除工具 — 仅允许删除用户自定义工具，内置工具不可删除."""
-    # 拒绝删除内置工具
+    # 拒绝删除内置工具（scope=builtin）
     if tool_id.startswith("builtin_"):
         raise HTTPException(
             status_code=403,
-            detail={"ok": False, "error": "内置工具不可删除"},
+            detail={"ok": False, "error": "内置工具（scope=builtin）不可删除"},
         )
 
     registry = _load_tools_registry()

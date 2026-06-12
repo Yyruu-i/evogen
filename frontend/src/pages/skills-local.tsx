@@ -19,6 +19,34 @@ interface SkillFormData {
 
 const EMPTY_FORM: SkillFormData = { name: '', category: '', description: '', markdown: '' };
 
+// ── API helper (same token logic as @/lib/api apiRequest()) ──
+const AUTH_TOKEN_KEY = 'evogen-auth-token';
+function getToken(): string {
+  try { return localStorage.getItem(AUTH_TOKEN_KEY) || ''; }
+  catch { return ''; }
+}
+async function apiRequest<T>(path: string, options?: RequestInit): Promise<T> {
+  const token = getToken();
+  const res = await fetch(`/api/v1${path}`, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...options?.headers,
+    },
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    const msg = typeof body.detail === 'object'
+      ? (body.detail?.error || JSON.stringify(body.detail))
+      : (body.detail || body.error);
+    throw new Error(msg || `HTTP ${res.status}`);
+  }
+  const json = await res.json();
+  if (json.ok === true && 'data' in json) return json.data as T;
+  return json as T;
+}
+
 export function SkillsLocalPage() {
   const navigate = useNavigate();
   const { data, isLoading, refetch } = useSkills();
@@ -59,16 +87,14 @@ export function SkillsLocalPage() {
     try {
       if (editingId) {
         // Update existing skill
-        await fetch(`/api/v1/skills/${editingId}`, {
+        await apiRequest(`/skills/${editingId}`, {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(form),
         });
       } else {
         // Create new skill
-        await fetch('/api/v1/skills', {
+        await apiRequest('/skills', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(form),
         });
       }
@@ -82,7 +108,7 @@ export function SkillsLocalPage() {
 
   const handleDelete = async (skillId: string) => {
     try {
-      await fetch(`/api/v1/skills/${skillId}`, { method: 'DELETE' });
+      await apiRequest(`/skills/${skillId}`, { method: 'DELETE' });
       refetch();
     } catch (e: any) {
       alert('删除失败: ' + (e.message || '未知错误'));
@@ -92,19 +118,13 @@ export function SkillsLocalPage() {
   const handleBatchDelete = async () => {
     if (selectedIds.size === 0) { alert('请先选择要删除的技能'); return; }
     try {
-      const res = await fetch('/api/v1/skills/batch/delete', {
+      await apiRequest('/skills/batch/delete', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ids: [...selectedIds] }),
       });
-      const d = await res.json();
-      if (d.ok) {
-        setBatchMode(false);
-        setSelectedIds(new Set());
-        refetch();
-      } else {
-        alert('批量删除失败: ' + (d.error || '未知错误'));
-      }
+      setBatchMode(false);
+      setSelectedIds(new Set());
+      refetch();
     } catch (e: any) {
       alert('批量删除失败: ' + (e.message || '未知错误'));
     }
@@ -158,9 +178,8 @@ export function SkillsLocalPage() {
       const data = JSON.parse(text);
       const items = Array.isArray(data) ? data : [data];
       for (const item of items) {
-        await fetch('/api/v1/skills', {
+        await apiRequest('/skills', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(item),
         });
       }

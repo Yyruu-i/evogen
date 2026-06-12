@@ -111,10 +111,14 @@ def _parse_skill_frontmatter(file_path: Path) -> Optional[dict]:
         try:
             idx = parts.index("skills")
             after = parts[idx + 1:]
-            if len(after) >= 3:
-                category = after[-3]  # skills/.../category/skill/SKILL.md
-            elif len(after) == 2:
-                category = after[0]   # skills/category/SKILL.md
+            # 跳过 UUID / user_xxx / default 等 user-id 段
+            uuid_re = re.compile(
+                r"^(default|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|user_[a-z0-9_]+)$"
+            )
+            # 过滤掉可能的 user_id 段，只保留真正分类名
+            filtered = [seg for seg in after[:-2] if not uuid_re.match(seg)]
+            if filtered:
+                category = filtered[-1]  # 取最后一个分类段
         except (ValueError, IndexError):
             pass
 

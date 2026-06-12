@@ -27,6 +27,7 @@ MIGRATIONS = {
     "v0.1.0_initial_schema": str(SCHEMA_PATH),
     "v0.1.1_sessions": str(Path(__file__).parent / "migration_v0.1.1_sessions.sql"),
     "v0.2.0_auth_isolation": str(Path(__file__).parent / "migration_v0.2.0_auth.sql"),
+    "v0.2.1_artifacts": str(Path(__file__).parent / "migration_v0.2.1_artifacts.sql"),
 }
 
 
@@ -169,6 +170,7 @@ def _verify_tables(db):
         "persona_attributes",
         "memory_snapshots",
         "users",
+        "artifacts",
     ]
 
     for table in required_tables:

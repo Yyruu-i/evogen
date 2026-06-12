@@ -70,9 +70,7 @@ def mock_all(monkeypatch, tmp_path):
     from backend.api import tools_routes as tmod
     tmod._custom_tools.clear()
 
-    # Artifacts
-    from backend.api import artifacts_routes as amod
-    amod._artifacts.clear()
+    # Artifacts — now SQLite-backed (already mocked via mock_db above)
 
     return mock_db
 
@@ -166,19 +164,14 @@ class TestArtifactIsolation:
     """制品面板数据互不可见."""
 
     def test_artifact_list_filters_by_user(self, client):
-        """用户A的制品不应出现在B的列表中."""
-        from backend.api.artifacts_routes import _artifacts
+        """用户A的制品不应出现在B的列表中 — SQLite 持久化."""
+        import backend.api.artifacts_routes as amod
 
-        _artifacts["user_a"] = [{
-            "id": "a1", "type": "code", "title": "A代码",
-            "content": "print('a')", "language": "python",
-            "session_id": None, "created_at": "2024-01-01T00:00:00Z",
-        }]
-        _artifacts["user_b"] = [{
-            "id": "b1", "type": "code", "title": "B代码",
-            "content": "print('b')", "language": "python",
-            "session_id": None, "created_at": "2024-01-01T00:00:00Z",
-        }]
+        # Store artifacts for both users via the SQLite-backed store_artifact
+        amod.store_artifact("code", "A代码", "print('a')",
+                           language="python", user_id="user_a")
+        amod.store_artifact("code", "B代码", "print('b')",
+                           language="python", user_id="user_b")
 
         ra = client.get("/api/v1/artifacts", headers=hdr("user_a"))
         a_titles = [a["title"] for a in ra.json().get("data", {}).get("artifacts", [])]

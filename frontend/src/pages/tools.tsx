@@ -1,60 +1,120 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Zap, Plus, Trash2, Search, Shield, Terminal, Braces, X } from 'lucide-react';
+import { Zap, Plus, Trash2, Search, Terminal, Pencil, X } from 'lucide-react';
 import { Badge } from '@/components/shared/badge';
 import { ListSkeleton } from '@/components/shared/skeleton';
 import { EmptyState } from '@/components/shared/empty-state';
 
-interface ToolParam { name: string; type: string; description: string; required: boolean; }
-interface Tool { name: string; description: string; parameters: ToolParam[]; toolset: string; requires_env: string[]; call_count: number; enabled: boolean; command?: string; }
+// ── Types ──────────────────────────────────────────────────────
 
-// Toolset → Chinese label
-const TOOLSET_LABELS: Record<string, string> = {
-  browser: '浏览器',
-  terminal: '终端',
-  file: '文件',
-  web: '网络',
-  search: '搜索',
-  memory: '记忆',
-  session_search: '会话搜索',
-  delegation: '代理',
-  cronjob: '计划任务',
-  code_execution: '代码执行',
-  clarify: '询问',
-  messaging: '消息',
-  todo: '任务',
-  vision: '视觉',
-  tts: '语音',
-  skills: '技能',
-  spotify: 'Spotify',
-  homeassistant: '智能家居',
-  discord: 'Discord',
-  discord_admin: 'Discord 管理',
-  feishu_doc: '飞书文档',
-  feishu_drive: '飞书云盘',
-  yuanbao: '元宝',
+interface ToolEntry {
+  id: string;
+  name: string;
+  description: string;
+  endpoint: string;
+  category: string;
+  parameters: Record<string, string>;
+  user_id?: string;
+  scope: 'builtin' | 'user';
+  created_at: string;
+}
+
+interface ToolForm {
+  name: string;
+  description: string;
+  endpoint: string;
+  category: string;
+  paramsJson: string;
+}
+
+// ── Chinese labels ─────────────────────────────────────────────
+
+const CATEGORY_LABELS_CN: Record<string, string> = {
+  '联网': '联网搜索',
+  '浏览器': '浏览器',
+  '终端': '终端命令',
+  '文件': '文件操作',
+  '网络': '网络请求',
+  '搜索': '搜索',
+  '内存': '内存',
+  '记忆': '记忆',
+  '代理': '代理任务',
+  '代码执行': '代码执行',
+  '计划任务': '计划任务',
+  '测试': '测试',
+  'AI': 'AI 对话',
+  '消息': '消息推送',
 };
 
-const EMPTY_FORM = { name: '', description: '', toolset: '', paramsJson: '', command: '' };
+const TOOL_NAME_CN: Record<string, string> = {
+  'web_search': '网页搜索',
+  'browser': '浏览器',
+};
+
+function categoryLabel(cat: string): string {
+  return CATEGORY_LABELS_CN[cat] || cat;
+}
+
+function toolNameLabel(name: string): string {
+  return TOOL_NAME_CN[name] || name;
+}
+
+// ── API helpers ────────────────────────────────────────────────
+
+const AUTH_TOKEN_KEY = 'evogen-auth-token';
+function getToken(): string {
+  try { return localStorage.getItem(AUTH_TOKEN_KEY) || ''; }
+  catch { return ''; }
+}
+
+async function apiRequest<T>(path: string, options?: RequestInit): Promise<T> {
+  const token = getToken();
+  const res = await fetch(`/api/v1${path}`, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...options?.headers,
+    },
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    const msg = typeof body.detail === 'object'
+      ? (body.detail?.error || JSON.stringify(body.detail))
+      : (body.detail || body.error);
+    throw new Error(msg || `HTTP ${res.status}`);
+  }
+  const json = await res.json();
+  if (json.ok === true && 'data' in json) return json.data as T;
+  return json as T;
+}
+
+// ── Constants ──────────────────────────────────────────────────
+
+const EMPTY_FORM: ToolForm = {
+  name: '', description: '', endpoint: '', category: '', paramsJson: '',
+};
+
+// ── Component ──────────────────────────────────────────────────
 
 export function ToolsPage() {
-  const [tools, setTools] = useState<Tool[]>([]);
+  const [tools, setTools] = useState<ToolEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
-  const [selectedToolset, setSelectedToolset] = useState('');
-  const [showAdd, setShowAdd] = useState(false);
-  const [form, setForm] = useState(EMPTY_FORM);
-  const [addLoading, setAddLoading] = useState(false);
+  const [selectedCategory, setSelectedCategory] = useState('');
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [form, setForm] = useState<ToolForm>(EMPTY_FORM);
+  const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState('');
 
-  // Fetch tools
+  // ── Fetch tools ──────────────────────────────────────────
+
   const fetchTools = useCallback(async () => {
     setError('');
     try {
-      const r = await fetch('/api/v1/tools');
-      const d = await r.json();
-      const list = d.data?.tools || d.tools || [];
-      setTools(list);
+      const data = await apiRequest<{ tools: ToolEntry[]; total: number }>('/resource/tools');
+      setTools(data.tools || []);
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -64,31 +124,52 @@ export function ToolsPage() {
 
   useEffect(() => { fetchTools(); }, [fetchTools]);
 
-  const toolsets = [...new Set(tools.map(t => t.toolset))].sort();
+  // ── Derived data ─────────────────────────────────────────
+
+  const categories = [...new Set(tools.map(t => t.category).filter(Boolean))].sort();
 
   const filtered = tools.filter(t => {
     if (search && !t.name.includes(search) && !t.description.includes(search)) return false;
-    if (selectedToolset && t.toolset !== selectedToolset) return false;
+    if (selectedCategory && t.category !== selectedCategory) return false;
     return true;
   });
 
+  // ── Form handlers ────────────────────────────────────────
+
   const openAdd = () => {
+    setEditingId(null);
     setForm(EMPTY_FORM);
     setFormError('');
-    setShowAdd(true);
+    setShowForm(true);
   };
 
-  const handleAdd = async () => {
+  const openEdit = (tool: ToolEntry) => {
+    setEditingId(tool.id);
+    setForm({
+      name: tool.name,
+      description: tool.description,
+      endpoint: tool.endpoint,
+      category: tool.category,
+      paramsJson: tool.parameters && Object.keys(tool.parameters).length > 0
+        ? JSON.stringify(tool.parameters, null, 2)
+        : '',
+    });
+    setFormError('');
+    setShowForm(true);
+  };
+
+  const handleSave = async () => {
     setFormError('');
     if (!form.name.trim()) { setFormError('工具名称为必填项'); return; }
 
-    // Parse params JSON
-    let parameters: ToolParam[] = [];
+    // Parse params JSON if provided
+    let parameters: Record<string, string> = {};
     if (form.paramsJson.trim()) {
       try {
-        const parsed = JSON.parse(form.paramsJson);
-        if (!Array.isArray(parsed)) throw new Error('参数必须是数组格式');
-        parameters = parsed;
+        parameters = JSON.parse(form.paramsJson);
+        if (typeof parameters !== 'object' || Array.isArray(parameters)) {
+          throw new Error('参数必须是 JSON 对象');
+        }
       } catch {
         setFormError('参数 JSON 格式有误，请检查');
         return;
@@ -98,36 +179,44 @@ export function ToolsPage() {
     const payload = {
       name: form.name.trim(),
       description: form.description.trim(),
-      toolset: form.toolset.trim(),
+      endpoint: form.endpoint.trim(),
+      category: form.category.trim(),
       parameters,
-      command: form.command.trim(),
     };
 
-    setAddLoading(true);
+    setSaving(true);
     try {
-      await fetch('/api/v1/tools', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      setShowAdd(false);
+      if (editingId) {
+        await apiRequest(`/resource/tools/${editingId}`, {
+          method: 'PUT',
+          body: JSON.stringify(payload),
+        });
+      } else {
+        await apiRequest('/resource/tools', {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        });
+      }
+      setShowForm(false);
       setLoading(true);
       await fetchTools();
     } catch (e: any) {
-      setFormError('添加失败: ' + (e.message || '未知错误'));
+      setFormError('保存失败: ' + (e.message || '未知错误'));
     }
-    setAddLoading(false);
+    setSaving(false);
   };
 
-  const handleDelete = async (name: string) => {
+  const handleDelete = async (toolId: string) => {
     try {
-      await fetch(`/api/v1/tools/${name}`, { method: 'DELETE' });
+      await apiRequest(`/resource/tools/${toolId}`, { method: 'DELETE' });
       setLoading(true);
       await fetchTools();
     } catch (e: any) {
       setError('删除失败: ' + (e.message || '未知错误'));
     }
   };
+
+  // ── Render ───────────────────────────────────────────────
 
   return (
     <div className="flex flex-col min-h-full bg-primary">
@@ -159,13 +248,13 @@ export function ToolsPage() {
             />
           </div>
           <select
-            value={selectedToolset}
-            onChange={e => setSelectedToolset(e.target.value)}
+            value={selectedCategory}
+            onChange={e => setSelectedCategory(e.target.value)}
             className="text-[13px]"
           >
-            <option value="">全部工具集</option>
-            {toolsets.map(ts => (
-              <option key={ts} value={ts}>{TOOLSET_LABELS[ts] || ts}</option>
+            <option value="">全部分类</option>
+            {categories.map(cat => (
+              <option key={cat} value={cat}>{categoryLabel(cat)}</option>
             ))}
           </select>
           <button className="btn-primary h-8 text-[12px]" onClick={openAdd}>
@@ -178,7 +267,9 @@ export function ToolsPage() {
         <div className="flex items-center gap-2 mb-3 text-[12px] text-muted">
           <span>共 {filtered.length} 个工具</span>
           <span>·</span>
-          <span>{toolsets.length} 个工具集</span>
+          <span>{tools.filter(t => t.scope === 'builtin').length} 个内置</span>
+          <span>·</span>
+          <span>{tools.filter(t => t.scope === 'user').length} 个自定义</span>
         </div>
 
         {/* Error */}
@@ -186,88 +277,85 @@ export function ToolsPage() {
           <div className="bg-danger/10 text-danger text-[13px] p-3 rounded-lg mb-4">{error}</div>
         )}
 
-        {/* Add form */}
-        {showAdd && (
-          <div className="glass-card-accent p-4 mb-4 space-y-3">
-            <div className="flex items-center justify-between">
-              <h3 className="text-[13px] font-semibold">添加新工具</h3>
-              <button className="btn-ghost h-7 w-7 p-0" onClick={() => setShowAdd(false)}>
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            {formError && (
-              <div className="bg-danger/10 text-danger text-[12px] p-2 rounded-md">{formError}</div>
-            )}
-
-            {/* Row 1: name / toolset */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <label className="text-[11px] text-muted mb-0.5 block">工具名称 *</label>
-                <input
-                  className="w-full"
-                  placeholder="如 my_custom_tool"
-                  value={form.name}
-                  onChange={e => setForm(p => ({ ...p, name: e.target.value }))}
-                />
+        {/* Add/Edit modal */}
+        {showForm && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+            <div className="glass-card-accent p-6 w-full max-w-lg mx-4 space-y-4 max-h-[85vh] overflow-y-auto">
+              <div className="flex items-center justify-between">
+                <h3 className="text-[15px] font-semibold">
+                  {editingId ? '编辑工具' : '添加工具'}
+                </h3>
+                <button className="btn-ghost h-7 w-7 p-0" onClick={() => setShowForm(false)}>
+                  <X className="w-4 h-4" />
+                </button>
               </div>
-              <div>
-                <label className="text-[11px] text-muted mb-0.5 block">所属工具集</label>
-                <input
-                  className="w-full"
-                  placeholder="如 terminal"
-                  value={form.toolset}
-                  onChange={e => setForm(p => ({ ...p, toolset: e.target.value }))}
-                />
-              </div>
-            </div>
 
-            {/* Row 2: description */}
-            <div>
-              <label className="text-[11px] text-muted mb-0.5 block">描述</label>
-              <input
-                className="w-full"
-                placeholder="工具功能描述"
-                value={form.description}
-                onChange={e => setForm(p => ({ ...p, description: e.target.value }))}
-              />
-            </div>
+              {formError && (
+                <div className="bg-danger/10 text-danger text-[12px] p-2 rounded-md">{formError}</div>
+              )}
 
-            {/* Row 3: parameters (JSON) + command side by side */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <label className="text-[11px] text-muted mb-0.5 flex items-center gap-1">
-                  <Braces className="w-3 h-3" />
-                  参数定义 (JSON)
-                </label>
-                <textarea
-                  className="w-full font-mono text-[11px]"
-                  rows={4}
-                  placeholder={'[\n  {"name": "url", "type": "string", "description": "目标地址", "required": true},\n  {"name": "timeout", "type": "number", "description": "超时", "required": false}\n]'}
-                  value={form.paramsJson}
-                  onChange={e => setForm(p => ({ ...p, paramsJson: e.target.value }))}
-                />
-              </div>
-              <div>
-                <label className="text-[11px] text-muted mb-0.5 flex items-center gap-1">
-                  <Terminal className="w-3 h-3" />
-                  执行命令
-                </label>
-                <textarea
-                  className="w-full font-mono text-[11px]"
-                  rows={4}
-                  placeholder="工具实际执行的命令，如：curl -X POST {url}"
-                  value={form.command}
-                  onChange={e => setForm(p => ({ ...p, command: e.target.value }))}
-                />
-              </div>
-            </div>
+              <div className="space-y-3">
+                <div>
+                  <label className="text-[11px] text-muted mb-0.5 block">工具名称 *</label>
+                  <input
+                    className="w-full"
+                    placeholder="如 web_search"
+                    value={form.name}
+                    onChange={e => setForm(p => ({ ...p, name: e.target.value }))}
+                  />
+                </div>
 
-            <div className="flex gap-2">
-              <button className="btn-primary h-8 text-[12px]" onClick={handleAdd} disabled={addLoading}>
-                {addLoading ? '添加中...' : '确认添加'}
-              </button>
-              <button className="btn-ghost h-8 text-[12px]" onClick={() => setShowAdd(false)}>取消</button>
+                <div>
+                  <label className="text-[11px] text-muted mb-0.5 block">分类</label>
+                  <input
+                    className="w-full"
+                    placeholder="如 网络"
+                    value={form.category}
+                    onChange={e => setForm(p => ({ ...p, category: e.target.value }))}
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[11px] text-muted mb-0.5 block">描述</label>
+                  <input
+                    className="w-full"
+                    placeholder="工具功能描述"
+                    value={form.description}
+                    onChange={e => setForm(p => ({ ...p, description: e.target.value }))}
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[11px] text-muted mb-0.5 flex items-center gap-1">
+                    <Terminal className="w-3 h-3" />
+                    端点/命令
+                  </label>
+                  <input
+                    className="w-full font-mono text-[12px]"
+                    placeholder="如 /api/v1/search 或 curl -X POST {url}"
+                    value={form.endpoint}
+                    onChange={e => setForm(p => ({ ...p, endpoint: e.target.value }))}
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[11px] text-muted mb-0.5 block">参数定义 (JSON)</label>
+                  <textarea
+                    className="w-full font-mono text-[11px]"
+                    rows={4}
+                    placeholder='{"query": "string", "limit": "int"}'
+                    value={form.paramsJson}
+                    onChange={e => setForm(p => ({ ...p, paramsJson: e.target.value }))}
+                  />
+                </div>
+              </div>
+
+              <div className="flex gap-2 pt-2">
+                <button className="btn-primary h-8 text-[12px]" onClick={handleSave} disabled={saving}>
+                  {saving ? '保存中...' : editingId ? '更新工具' : '创建工具'}
+                </button>
+                <button className="btn-ghost h-8 text-[12px]" onClick={() => setShowForm(false)}>取消</button>
+              </div>
             </div>
           </div>
         )}
@@ -287,65 +375,57 @@ export function ToolsPage() {
               <thead>
                 <tr>
                   <th>工具名称</th>
-                  <th>参数</th>
-                  <th>权限</th>
-                  <th>调用次数</th>
+                  <th>分类</th>
+                  <th>端点</th>
+                  <th>类型</th>
                   <th>操作</th>
                 </tr>
               </thead>
               <tbody>
                 {filtered.map(tool => (
-                  <tr key={tool.name} className="border-b border-color/30 hover:bg-hover/30 transition-colors">
+                  <tr key={tool.id} className="border-b border-color/30 hover:bg-hover/30 transition-colors">
                     <td>
                       <div>
-                        <span className="text-[13px] font-medium">{tool.name}</span>
+                        <span className="text-[13px] font-medium">{toolNameLabel(tool.name)}</span>
                         <p className="text-[11px] text-muted mt-0.5 max-w-[240px] truncate">
                           {tool.description}
                         </p>
-                        {tool.command && (
-                          <p className="text-[10px] text-muted mt-0.5 max-w-[240px] truncate font-mono">
-                            <Terminal className="w-2.5 h-2.5 inline mr-0.5" />
-                            {tool.command}
-                          </p>
-                        )}
                       </div>
                     </td>
                     <td>
-                      <div className="flex flex-wrap gap-1">
-                        {tool.parameters && tool.parameters.length > 0 ? (
-                          tool.parameters.map(p => (
-                            <span key={p.name} className="text-[11px] text-muted">
-                              <code className="text-[10px]">{p.name}</code>
-                              {p.required && <span className="text-accent ml-0.5">*</span>}
-                            </span>
-                          ))
-                        ) : (
-                          <span className="text-[11px] text-muted">-</span>
-                        )}
-                      </div>
+                      <span className="text-[12px]">{categoryLabel(tool.category)}</span>
                     </td>
                     <td>
-                      <div className="flex flex-wrap gap-1">
-                        <Badge variant="info">{TOOLSET_LABELS[tool.toolset] || tool.toolset || '默认'}</Badge>
-                        {tool.requires_env && tool.requires_env.length > 0 && (
-                          <span className="flex items-center gap-0.5 text-[10px] text-warning" title={tool.requires_env.join(', ')}>
-                            <Shield className="w-2.5 h-2.5" />
-                            需 API Key
-                          </span>
-                        )}
-                      </div>
+                      <code className="text-[11px] text-muted max-w-[200px] truncate block">
+                        {tool.endpoint || '-'}
+                      </code>
                     </td>
                     <td>
-                      <span className="text-[13px] font-mono">{tool.call_count ?? 0}</span>
+                      <Badge variant={tool.scope === 'builtin' ? 'accent' : 'default'}>
+                        {tool.scope === 'builtin' ? '内置' : '用户'}
+                      </Badge>
                     </td>
                     <td>
-                      <button
-                        className="btn-ghost h-7 w-7 p-0 flex items-center justify-center text-danger hover:bg-danger/10"
-                        onClick={() => handleDelete(tool.name)}
-                        title="删除工具"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                      {tool.scope === 'user' ? (
+                        <div className="flex gap-1">
+                          <button
+                            className="btn-ghost h-7 text-[11px] px-2"
+                            onClick={() => openEdit(tool)}
+                            title="编辑工具"
+                          >
+                            <Pencil className="w-3 h-3" />
+                          </button>
+                          <button
+                            className="btn-ghost h-7 text-[11px] px-2 text-danger hover:bg-danger/10"
+                            onClick={() => handleDelete(tool.id)}
+                            title="删除工具"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        </div>
+                      ) : (
+                        <span className="text-[11px] text-muted">只读</span>
+                      )}
                     </td>
                   </tr>
                 ))}

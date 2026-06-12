@@ -103,12 +103,20 @@ def _parse_skill_frontmatter(file_path: Path) -> Optional[dict]:
         if isinstance(raw_tags, list):
             tags = [str(t) for t in raw_tags]
 
-    # 技能所属分类：文件路径中 skills/ 之后的第一个目录名
-    category = ""
-    path_str = str(file_path)
-    m = re.search(r"/skills/([^/]+)/", path_str)
-    if m:
-        category = m.group(1)
+    # 技能所属分类：优先取 frontmatter，回退到路径推断
+    category = fm.get("category", "")
+    if not category:
+        # 路径结构: .../skills/[{user_id}/]{category}/{skill}/SKILL.md
+        parts = file_path.parts
+        try:
+            idx = parts.index("skills")
+            after = parts[idx + 1:]
+            if len(after) >= 3:
+                category = after[-3]  # skills/.../category/skill/SKILL.md
+            elif len(after) == 2:
+                category = after[0]   # skills/category/SKILL.md
+        except (ValueError, IndexError):
+            pass
 
     return {
         "name": fm.get("name", file_path.parent.name),

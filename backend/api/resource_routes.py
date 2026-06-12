@@ -6,6 +6,7 @@
 import json
 import logging
 import os
+import re
 import shutil
 import uuid
 from datetime import datetime, timezone
@@ -84,6 +85,9 @@ def _get_write_dir() -> Path:
     d.mkdir(parents=True, exist_ok=True)
     return d
 
+_USER_DIR_RE = re.compile(
+    r"^(default|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|user_[a-z0-9_]+)$"
+)
 _HERMES_HOME = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
 _TOOL_REGISTRY_PATH = Path(_HERMES_HOME) / "tools_registry.json"
 
@@ -283,14 +287,16 @@ async def list_resource_skills(user_id: str = Depends(get_user_id)):
                 scope = fm_scope
             else:
                 # 回退到路径推断（兼容旧数据）
+                # 仅当路径第一级看起来像用户目录时才做隔离判断
                 is_user_skill = False
                 try:
                     rel = md.parent.relative_to(sd)
                     parts = rel.parts
-                    if len(parts) >= 2 and parts[0] != user_id:
-                        continue
-                    if len(parts) >= 2 and parts[0] == user_id:
-                        is_user_skill = True
+                    if len(parts) >= 2:
+                        if parts[0] == user_id:
+                            is_user_skill = True
+                        elif _USER_DIR_RE.match(parts[0]):
+                            continue  # 其他用户的目录
                 except ValueError:
                     pass
                 scope = "user" if is_user_skill else "builtin"

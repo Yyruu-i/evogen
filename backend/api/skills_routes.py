@@ -273,7 +273,12 @@ async def update_skill(skill_id: str, skill_data: dict, user_id: str = Depends(g
             break
 
     if not md_path:
-        return {"ok": False, "error": "技能不存在或为内置技能，不可编辑"}
+        raise HTTPException(status_code=403, detail={"ok": False, "error": "技能不存在或为内置技能，不可编辑"})
+
+    # 二次校验：读取 frontmatter scope，内置技能（scope≠user）禁止编辑
+    fm_check = _parse_skill_frontmatter(md_path) or {}
+    if fm_check.get("scope") != "user":
+        raise HTTPException(status_code=403, detail={"ok": False, "error": "内置技能不可编辑，仅用户自定义技能（scope=user）可编辑"})
 
     name = skill_data.get("name", "").strip()
     description = skill_data.get("description", "").strip()

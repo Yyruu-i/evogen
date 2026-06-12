@@ -37,7 +37,7 @@ class EvoGenConfig:
 
     # ── LLM 配置 ──
     llm_provider: str = field(default_factory=lambda: os.getenv("LLM_PROVIDER", "deepseek"))
-    llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "deepseek-v4-pro"))
+    llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "deepseek-chat"))
     llm_api_key: str = field(default_factory=lambda: os.getenv("DEEPSEEK_API_KEY", ""))
     llm_base_url: str = field(default_factory=lambda: os.getenv(
         "LLM_BASE_URL", "https://api.deepseek.com"

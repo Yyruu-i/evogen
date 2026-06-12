@@ -146,15 +146,24 @@ def _ensure_session(session_id: str | None, user_id: str = "default") -> tuple[s
         ).fetchone()
         if row:
             return session_id, False
-        # session_id 存在但不属于当前用户 → 创建新会话（不暴露错误信息）
+        # session_id 不存在或属于其他用户 → 以当前用户身份创建此 session_id
     # 创建新会话
-    new_id = str(uuid.uuid4())
+    new_id = session_id if session_id else str(uuid.uuid4())
     now = _utcnow_iso()
-    db.execute(
-        "INSERT INTO sessions (id, title, source, user_id, created_at, updated_at, message_count, token_estimate) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (new_id, "新对话", "web", user_id, now, now, 0, 0),
-    )
-    db.commit()
+    try:
+        db.execute(
+            "INSERT INTO sessions (id, title, source, user_id, created_at, updated_at, message_count, token_estimate) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (new_id, "新对话", "web", user_id, now, now, 0, 0),
+        )
+        db.commit()
+    except Exception:
+        # ID collision (rare): fall back to UUID
+        new_id = str(uuid.uuid4())
+        db.execute(
+            "INSERT INTO sessions (id, title, source, user_id, created_at, updated_at, message_count, token_estimate) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (new_id, "新对话", "web", user_id, now, now, 0, 0),
+        )
+        db.commit()
     return new_id, True
 
 

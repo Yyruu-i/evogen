@@ -337,9 +337,9 @@ async def create_resource_skill(request: CreateSkillRequest, user_id: str = Depe
     # 生成安全 ID
     skill_id = request.name.lower().replace(" ", "-").replace("_", "-")
 
-    # 确定目标目录（用户隔离：所有自定义技能写入 ~/.hermes/skills/{user_id}/...）
-    write_dir = _get_write_dir()
-    user_skills_base = write_dir / user_id
+    # 确定目标目录（用户隔离：所有自定义技能写入系统级 skills 目录的 {user_id} 子目录）
+    # _SKILLS_DIRS[-1] 始终是 ~/.hermes/skills（排在所有 profile skills 之后）
+    user_skills_base = _SKILLS_DIRS[-1] / user_id
     if request.category:
         target_dir = user_skills_base / request.category / skill_id
     else:

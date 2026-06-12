@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from backend.auth.dependencies import get_current_user
 
@@ -117,6 +117,8 @@ def _parse_skill_frontmatter(file_path: Path) -> Optional[dict]:
         "category": category,
         "version": fm.get("version", "1.0.0"),
         "author": fm.get("author", ""),
+        "scope": fm.get("scope", ""),
+        "user_id": fm.get("user_id", ""),
     }
 
 
@@ -140,6 +142,10 @@ def _scan_skills(user_id: str = "default") -> list[dict]:
                 continue
             skill_id = md_path.parent.name
             mtime = md_path.stat().st_mtime
+            # 读取 frontmatter 判断是否属于其他用户
+            fm = _parse_skill_frontmatter(md_path)
+            if fm and fm.get("scope") == "user" and fm.get("user_id") and fm["user_id"] != user_id:
+                continue  # 其他用户的技能，跳过
             if skill_id not in skill_files or mtime > skill_files[skill_id]["mtime"]:
                 skill_files[skill_id] = {"path": md_path, "mtime": mtime, "scope": "builtin"}
 
@@ -262,8 +268,19 @@ async def update_skill(skill_id: str, skill_data: dict, user_id: str = Depends(g
     markdown_body = skill_data.get("markdown", "").strip()
     category = skill_data.get("category", "").strip()
 
-    # Parse existing to preserve other frontmatter
+    # Parse existing to preserve other frontmatter and body
     existing = _parse_skill_frontmatter(md_path) or {}
+
+    # Extract existing body (everything after frontmatter)
+    existing_body = ""
+    try:
+        raw = md_path.read_text(encoding="utf-8")
+        parts = raw.split("---", 2)
+        if len(parts) >= 3:
+            existing_body = parts[2].lstrip("\n")
+    except Exception:
+        pass
+
     yaml_front = (
         f"---\n"
         f"name: {name or existing.get('name', '')}\n"
@@ -274,7 +291,7 @@ async def update_skill(skill_id: str, skill_data: dict, user_id: str = Depends(g
         f"version: 1.0.0\n"
         f"---\n\n"
     )
-    content = yaml_front + (markdown_body or f"# {name}\n\n{description}\n")
+    content = yaml_front + (markdown_body or existing_body or f"# {name}\n\n{description}\n")
     md_path.write_text(content, encoding="utf-8")
 
     return {"ok": True, "data": {"id": skill_id, "name": name}}
@@ -295,21 +312,62 @@ async def delete_skill(skill_id: str, user_id: str = Depends(get_current_user)):
 
 
 @router.post("/batch/delete")
-async def batch_delete_skills(payload: dict):
-    """批量删除技能."""
+async def batch_delete_skills(payload: dict, user_id: str = Depends(get_current_user)):
+    """批量删除技能 — 仅允许删除用户自定义技能，内置技能（scope=builtin）禁止删除."""
     import shutil
     ids: list[str] = payload.get("ids", [])
     if not ids:
         return {"ok": False, "error": "ids 为空"}
     deleted = 0
+    forbidden: list[str] = []
+    not_found: list[str] = []
+    user_skills_dir = Path(os.path.expanduser(f"~/.hermes/skills/{user_id}"))
+
+    def _check_scope(md_path: Path) -> str:
+        """读取 SKILL.md frontmatter 中的 scope 字段."""
+        try:
+            raw = md_path.read_text(encoding="utf-8")
+            m = re.match(r"^---\s*\n(.*?)\n---", raw, re.DOTALL)
+            if m:
+                fm = yaml.safe_load(m.group(1)) or {}
+                return fm.get("scope", "")
+        except Exception:
+            pass
+        return ""
+
     for sid in ids:
+        found = False
+        # 1. 检查用户目录（优先，允许删除）
+        if user_skills_dir.is_dir():
+            for candidate in user_skills_dir.rglob(sid):
+                if candidate.is_dir() and (candidate / "SKILL.md").exists():
+                    md_file = candidate / "SKILL.md"
+                    scope = _check_scope(md_file)
+                    if scope == "builtin":
+                        forbidden.append(sid)
+                    else:
+                        shutil.rmtree(candidate)
+                        deleted += 1
+                    found = True
+                    break
+        if found:
+            continue
+
+        # 2. 检查全局目录（内置技能，禁止删除）
         for skills_dir in _SKILLS_DIRS:
             for candidate in skills_dir.rglob(sid):
                 if candidate.is_dir() and (candidate / "SKILL.md").exists():
-                    shutil.rmtree(candidate)
-                    deleted += 1
+                    scope = _check_scope(candidate / "SKILL.md")
+                    forbidden.append(sid)
+                    found = True
                     break
-            else:
-                continue
-            break
-    return {"ok": True, "data": {"deleted": deleted}}
+            if found:
+                break
+
+        if not found:
+            not_found.append(sid)
+
+    result = {"deleted": deleted, "not_found": not_found}
+    if forbidden:
+        result["forbidden"] = forbidden
+    return {"ok": True, "data": result}

@@ -232,6 +232,9 @@ async def create_skill(skill_data: dict, user_id: str = Depends(get_current_user
         f"name: {name}\n"
         f"description: {description}\n"
         f"category: {category}\n"
+        f"scope: user\n"
+        f"user_id: {user_id}\n"
+        f"version: 1.0.0\n"
         f"---\n\n"
     )
     content = yaml_front + (markdown_body or f"# {name}\n\n{description}\n")
@@ -266,6 +269,9 @@ async def update_skill(skill_id: str, skill_data: dict, user_id: str = Depends(g
         f"name: {name or existing.get('name', '')}\n"
         f"description: {description or existing.get('description', '')}\n"
         f"category: {category or existing.get('category', '')}\n"
+        f"scope: user\n"
+        f"user_id: {user_id}\n"
+        f"version: 1.0.0\n"
         f"---\n\n"
     )
     content = yaml_front + (markdown_body or f"# {name}\n\n{description}\n")

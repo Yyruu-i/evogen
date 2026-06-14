@@ -19,7 +19,18 @@ interface SkillFormData {
 
 const EMPTY_FORM: SkillFormData = { name: '', category: '', description: '', markdown: '' };
 
-// ── API helper (same token logic as @/lib/api apiRequest()) ──
+// ── 英→中 映射 ──
+const CATEGORY_CN: Record<string, string> = {
+  'software-development': '开发', 'autonomous-ai-agents': 'AI 代理', 'creative': '创作',
+  'data-science': '数据科学', 'devops': '运维', 'dogfood': '测试', 'email': '邮件',
+  'gaming': '游戏', 'github': 'GitHub', 'mcp': 'MCP', 'media': '媒体',
+  'mlops': 'MLOps', 'note-taking': '笔记', 'productivity': '效率',
+  'red-teaming': '安全测试', 'research': '研究', 'smart-home': '智能家居',
+  'social-media': '社交媒体', 'uncategorized': '未分类',
+};
+function cnCat(cat: string): string { return CATEGORY_CN[cat] || cat; }
+
+// ── API helper ──
 const AUTH_TOKEN_KEY = 'evogen-auth-token';
 function getToken(): string {
   try { return localStorage.getItem(AUTH_TOKEN_KEY) || ''; }
@@ -70,13 +81,21 @@ export function SkillsLocalPage() {
     setShowForm(true);
   };
 
-  const openEdit = (skill: any) => {
+  const openEdit = async (skill: any) => {
     setEditingId(skill.id);
+    // 读取技能详情，获取 markdown 正文
+    let markdownBody = '';
+    try {
+      const detail = await apiRequest<{ content: string }>(`/skills/${skill.id}`);
+      markdownBody = detail.content || '';
+    } catch {
+      // fallback
+    }
     setForm({
       name: skill.name || '',
       category: skill.category || '',
       description: skill.description || '',
-      markdown: '', // backend doesn't expose markdown body currently
+      markdown: markdownBody,
     });
     setShowForm(true);
   };
@@ -86,16 +105,24 @@ export function SkillsLocalPage() {
     setSaving(true);
     try {
       if (editingId) {
-        // Update existing skill
         await apiRequest(`/skills/${editingId}`, {
           method: 'PUT',
-          body: JSON.stringify(form),
+          body: JSON.stringify({
+            name: form.name,
+            description: form.description,
+            category: form.category,
+            markdown: form.markdown,
+          }),
         });
       } else {
-        // Create new skill
         await apiRequest('/skills', {
           method: 'POST',
-          body: JSON.stringify(form),
+          body: JSON.stringify({
+            name: form.name,
+            description: form.description,
+            category: form.category,
+            markdown: form.markdown,
+          }),
         });
       }
       setShowForm(false);
@@ -175,20 +202,47 @@ export function SkillsLocalPage() {
     if (!file) return;
     try {
       const text = await file.text();
-      const data = JSON.parse(text);
-      const items = Array.isArray(data) ? data : [data];
-      for (const item of items) {
+      const fname = file.name.toLowerCase();
+
+      if (fname.endsWith('.zip')) {
+        // Zip 导入：解析为 JSON 列表导入
+        throw new Error('ZIP 导入请在服务器端执行');
+      } else if (fname.endsWith('.md')) {
+        // Markdown 导入，从 frontmatter 解析
+        const lines = text.split('\n');
+        let name = '', description = '', category = '', body = text;
+        if (text.startsWith('---')) {
+          const parts = text.split('---', 3);
+          if (parts.length >= 3) {
+            const fmLines = parts[1].split('\n');
+            for (const l of fmLines) {
+              if (l.startsWith('name:')) name = l.replace('name:', '').trim();
+              if (l.startsWith('description:')) description = l.replace('description:', '').trim();
+              if (l.startsWith('category:')) category = l.replace('category:', '').trim();
+            }
+            body = parts[2].trim();
+          }
+        }
         await apiRequest('/skills', {
           method: 'POST',
-          body: JSON.stringify(item),
+          body: JSON.stringify({ name, description, category, markdown: body }),
         });
+      } else {
+        // JSON 导入
+        const data = JSON.parse(text);
+        const items = Array.isArray(data) ? data : [data];
+        for (const item of items) {
+          await apiRequest('/skills', {
+            method: 'POST',
+            body: JSON.stringify(item),
+          });
+        }
       }
       refetch();
-      alert(`成功导入 ${items.length} 个技能`);
+      alert('导入成功');
     } catch (e: any) {
       alert('导入失败: ' + (e.message || '文件格式错误'));
     }
-    // Reset input so same file can be re-imported
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -233,7 +287,7 @@ export function SkillsLocalPage() {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".json"
+                accept=".json,.md,.zip"
                 onChange={handleImport}
                 className="hidden"
               />
@@ -316,7 +370,7 @@ export function SkillsLocalPage() {
         </div>
       )}
 
-      {/* Skills list */}
+      {/* Skills table — matching tools table style */}
       {isLoading ? (
         <ListSkeleton rows={5} />
       ) : skills.length === 0 ? (
@@ -326,90 +380,92 @@ export function SkillsLocalPage() {
           description="技能帮助 Agent 完成特定任务。你可以从技能市场安装新技能，或手动添加。"
         />
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          {skills.map((skill) => (
-            <div
-              key={skill.id}
-              className="glass-card-accent p-4 transition-transform duration-200 group relative"
-            >
-              {/* Batch select checkbox */}
-              {batchMode && (
-                <button
-                  className="absolute top-2 right-2 z-10"
-                  onClick={(e) => { e.stopPropagation(); toggleSelect(skill.id); }}
-                >
-                  {selectedIds.has(skill.id) ? (
-                    <CheckSquare className="w-4 h-4" style={{ color: 'var(--color-accent)' }} />
-                  ) : (
-                    <Square className="w-4 h-4" style={{ color: 'var(--color-text-muted)' }} />
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead>
+              <tr>
+                {batchMode && <th style={{ width: 32 }}></th>}
+                <th>技能名称</th>
+                <th>分类</th>
+                <th>描述</th>
+                <th>类型</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {skills.map((skill) => (
+                <tr key={skill.id} className="border-b border-color/30 hover:bg-hover/30 transition-colors">
+                  {batchMode && (
+                    <td>
+                      <button
+                        className="btn-ghost h-7 w-7 p-0"
+                        onClick={(e) => { e.stopPropagation(); toggleSelect(skill.id); }}
+                      >
+                        {selectedIds.has(skill.id) ? (
+                          <CheckSquare className="w-3.5 h-3.5" style={{ color: 'var(--color-accent)' }} />
+                        ) : (
+                          <Square className="w-3.5 h-3.5" style={{ color: 'var(--color-text-muted)' }} />
+                        )}
+                      </button>
+                    </td>
                   )}
-                </button>
-              )}
-
-              <div
-                className={batchMode ? '' : 'cursor-pointer'}
-                onClick={() => batchMode ? toggleSelect(skill.id) : navigate(`/skills/local/${skill.id}`)}
-              >
-                <div className="flex items-start justify-between">
-                  <div className="min-w-0 flex-1">
-                    <h4 className="text-[13px] font-semibold text-truncate-safe">
-                      {skillLabel(skill.name, SKILL_NAME_CN)}
-                    </h4>
-                    <p className="text-[12px] text-secondary mt-1 text-truncate-safe">
+                  <td>
+                    <div>
+                      <span
+                        className="text-[13px] font-medium cursor-pointer"
+                        onClick={() => !batchMode && navigate(`/skills/local/${skill.id}`)}
+                      >
+                        {skillLabel(skill.name, SKILL_NAME_CN)}
+                      </span>
+                    </div>
+                  </td>
+                  <td>
+                    <span className="text-[12px]">{cnCat(skill.category)}</span>
+                  </td>
+                  <td>
+                    <p className="text-[11px] text-muted mt-0.5 max-w-[240px] truncate">
                       {skillLabel(skill.description, SKILL_NAME_CN)}
                     </p>
-                  </div>
-                  <Badge variant={skill.scope === 'builtin' ? 'accent' : skill.source === 'local' ? 'default' : 'accent'} className="ml-2 shrink-0">
-                    {skill.scope === 'builtin' ? '内置' : skill.source === 'local' ? '本地' : skill.source === 'hub' ? '市场' : '自动生成'}
-                  </Badge>
-                </div>
-                <div className="flex items-center gap-2 mt-3 flex-wrap">
-                  <span className="text-[11px] text-muted">v{skill.version}</span>
-                  <span className="text-[11px] text-muted">使用 {skill.use_count} 次</span>
-                  <span className="text-[11px] text-muted">
-                    成功率 {Math.round(skill.success_rate * 100)}%
-                  </span>
-                  <span className="text-[11px] text-muted text-truncate-safe">
-                    {skillLabel(skill.category, SKILL_CATEGORY_CN)}
-                  </span>
-                </div>
-                {skill.tags && skill.tags.length > 0 && (
-                  <div className="flex gap-1 mt-2 flex-wrap">
-                    {skill.tags.map((tag: string) => (
-                      <Badge key={tag} variant="info">{skillLabel(tag, SKILL_TAG_CN)}</Badge>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {/* Action buttons — hidden for builtin skills and batch mode */}
-              {!batchMode && skill.scope !== 'builtin' && (
-                <div className="flex gap-1 mt-3 pt-2 border-t border-color/30 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <button
-                    className="btn-ghost h-6 text-[11px] px-2"
-                    onClick={(e) => { e.stopPropagation(); openEdit(skill); }}
-                  >
-                    <Pencil className="w-3 h-3" />
-                    编辑
-                  </button>
-                  <button
-                    className="btn-ghost h-6 text-[11px] px-2"
-                    onClick={(e) => { e.stopPropagation(); handleExportSingle(skill); }}
-                  >
-                    <Download className="w-3 h-3" />
-                    导出
-                  </button>
-                  <button
-                    className="btn-ghost h-6 text-[11px] px-2 text-danger hover:bg-danger/10"
-                    onClick={(e) => { e.stopPropagation(); handleDelete(skill.id); }}
-                  >
-                    <Trash2 className="w-3 h-3" />
-                    删除
-                  </button>
-                </div>
-              )}
-            </div>
-          ))}
+                  </td>
+                  <td>
+                    <Badge variant={skill.scope === 'builtin' ? 'accent' : 'default'}>
+                      {skill.scope === 'builtin' ? '内置' : '用户'}
+                    </Badge>
+                  </td>
+                  <td>
+                    {skill.scope === 'builtin' ? (
+                      <span className="text-[11px] text-muted">只读</span>
+                    ) : (
+                      <div className="flex gap-1">
+                        <button
+                          className="btn-ghost h-7 text-[11px] px-2"
+                          onClick={() => openEdit(skill)}
+                          title="编辑"
+                        >
+                          <Pencil className="w-3 h-3" />
+                          编辑
+                        </button>
+                        <button
+                          className="btn-ghost h-7 text-[11px] px-2"
+                          onClick={() => handleExportSingle(skill)}
+                          title="导出"
+                        >
+                          <Download className="w-3 h-3" />
+                        </button>
+                        <button
+                          className="btn-ghost h-7 text-[11px] px-2 text-danger hover:bg-danger/10"
+                          onClick={() => handleDelete(skill.id)}
+                          title="删除"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
     </div>

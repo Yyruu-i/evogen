@@ -189,6 +189,7 @@ def _scan_skills(user_id: str = "default") -> list[dict]:
             "category": category_label or fm["category"],
             "source": "local",
             "scope": info.get("scope", "builtin"),
+            "user_id": fm.get("user_id", ""),
             "version": _version_int(fm.get("version", "1.0.0")),
             "use_count": 0,
             "success_rate": 0.0,
@@ -259,6 +260,35 @@ async def create_skill(skill_data: dict, user_id: str = Depends(get_current_user
     (target_dir / "SKILL.md").write_text(content, encoding="utf-8")
 
     return {"ok": True, "data": {"id": dir_name, "name": name}}
+
+
+@router.get("/{skill_id}")
+async def get_skill(skill_id: str, user_id: str = Depends(get_current_user)):
+    """获取单个技能完整内容（含 Markdown 正文）."""
+    user_skills_dir = Path(os.path.expanduser(f"~/.hermes/skills/{user_id}"))
+    md_path = None
+    # 先查用户目录
+    if user_skills_dir.is_dir():
+        for candidate in user_skills_dir.rglob(f"{skill_id}/SKILL.md"):
+            md_path = candidate
+            break
+    # 再查全局目录
+    if not md_path:
+        for skills_dir in _SKILLS_DIRS:
+            for candidate in skills_dir.rglob(f"{skill_id}/SKILL.md"):
+                md_path = candidate
+                break
+            if md_path:
+                break
+    if not md_path:
+        raise HTTPException(status_code=404, detail={"ok": False, "error": "技能不存在"})
+    content = md_path.read_text(encoding="utf-8")
+    fm = _parse_skill_frontmatter(md_path) or {}
+    body = ""
+    parts = content.split("---", 2)
+    if len(parts) >= 3:
+        body = parts[2].lstrip("\n")
+    return {"ok": True, "data": {"content": body, "frontmatter": fm}}
 
 
 @router.put("/{skill_id}")

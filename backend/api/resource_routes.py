@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from backend.api.tools_routes import _static_tool_list as _hermes_static_tools
 from backend.auth.dependencies import get_current_user as get_user_id
 
 logger = logging.getLogger(__name__)
@@ -721,34 +722,60 @@ async def import_resource_skills_json(request: dict, user_id: str = Depends(get_
 # GET /api/v1/resource/tools — 列出工具
 # ════════════════════════════════════════════════════════
 
-# ── 内置工具定义（全局共享，所有用户可见，不可编辑/删除）──
-_BUILTIN_TOOLS: list[dict] = [
-    {
-        "id": "builtin_web_search",
-        "name": "web_search",
-        "description": "搜索互联网获取实时信息",
-        "endpoint": "/api/v1/agent/search",
-        "category": "联网",
-        "parameters": {"query": "string", "limit": "int"},
-        "scope": "builtin",
-        "created_at": "2025-01-01T00:00:00+00:00",
-    },
-    {
-        "id": "builtin_browser",
-        "name": "browser",
-        "description": "打开网页、截图、点击元素",
-        "endpoint": "/api/v1/browser",
-        "category": "浏览器",
-        "parameters": {},
-        "scope": "builtin",
-        "created_at": "2025-01-01T00:00:00+00:00",
-    },
-]
+# 从 tools_routes 获取内置工具列表并统一包装格式
+_TOOLSET_CATEGORY: dict[str, str] = {
+    "browser": "浏览器",
+    "terminal": "终端",
+    "file": "文件",
+    "web": "联网搜索",
+    "memory": "记忆",
+    "session_search": "搜索",
+    "delegation": "代理",
+    "cronjob": "计划任务",
+    "code_execution": "代码执行",
+    "clarify": "AI",
+    "messaging": "消息",
+    "todo": "任务",
+    "vision": "AI",
+    "tts": "AI",
+    "skills": "技能",
+    "feishu_doc": "飞书",
+    "feishu_drive": "飞书",
+}
+
+
+def _build_builtin_tools() -> list[dict]:
+    """从 tools_routes._static_tool_list() 生成统一格式的内置工具列表."""
+    raw = _hermes_static_tools()
+    result: list[dict] = []
+    for t in raw:
+        name = t["name"]
+        toolset = t.get("toolset", "")
+        category = _TOOLSET_CATEGORY.get(toolset, toolset)
+        # 将 parameters list 转成 {name: type} 字典格式
+        params: dict[str, str] = {}
+        for p in t.get("parameters", []):
+            pname = p.get("name", "")
+            ptype = p.get("type", "string")
+            if pname:
+                params[pname] = ptype
+        result.append({
+            "id": f"builtin_{name}",
+            "name": name,
+            "description": t.get("description", ""),
+            "endpoint": f"/api/v1/{toolset}/{name.split('_')[-1] if '_' in name else name}",
+            "category": category,
+            "parameters": params,
+            "scope": "builtin",
+            "created_at": "2025-01-01T00:00:00+00:00",
+        })
+    return result
 
 
 @router.get("/tools")
 async def list_resource_tools(user_id: str = Depends(get_user_id)):
     """列出工具：内置工具（全局共享）+ 用户自定义工具（隔离）."""
+    builtin_tools = _build_builtin_tools()
     registry = _load_tools_registry()
     all_tools = registry.get("tools", {})
     user_tools = list(all_tools.get(user_id, {}).values())
@@ -756,7 +783,7 @@ async def list_resource_tools(user_id: str = Depends(get_user_id)):
     for t in user_tools:
         t["scope"] = "user"
     # 内置工具 + 用户工具合并
-    return {"ok": True, "data": {"tools": _BUILTIN_TOOLS + user_tools, "total": len(_BUILTIN_TOOLS) + len(user_tools)}}
+    return {"ok": True, "data": {"tools": builtin_tools + user_tools, "total": len(builtin_tools) + len(user_tools)}}
 
 
 # ════════════════════════════════════════════════════════

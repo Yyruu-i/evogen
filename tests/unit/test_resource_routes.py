@@ -200,7 +200,8 @@ class TestToolsAPI:
         assert resp.status_code == 200
         data = resp.json()
         assert data["ok"] is True
-        assert data["data"]["total"] == 4  # 2 builtin + 2 user tools
+        from backend.api.tools_routes import _static_tool_list as _ht
+        assert data["data"]["total"] == len(_ht()) + 2  # builtin + 2 user tools
 
     def test_delete_tool(self, client):
         """DELETE /api/v1/resource/tools/{id} — 删除工具."""

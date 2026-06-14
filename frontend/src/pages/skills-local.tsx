@@ -1,5 +1,6 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useAuth } from '@/context/auth-context';
 import { useSkills } from '@/hooks/use-skills';
 import { Badge } from '@/components/shared/badge';
 import { ListSkeleton } from '@/components/shared/skeleton';
@@ -61,8 +62,14 @@ async function apiRequest<T>(path: string, options?: RequestInit): Promise<T> {
 export function SkillsLocalPage() {
   const navigate = useNavigate();
   const { data, isLoading, refetch } = useSkills();
+  const { token } = useAuth();
   const skills = data?.skills || [];
   const total = data?.total ?? skills.length;
+
+  // ── 用户切换时自动刷新技能列表 ──
+  useEffect(() => {
+    refetch();
+  }, [token, refetch]);
 
   // Modal & form state
   const [showForm, setShowForm] = useState(false);

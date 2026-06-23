@@ -1053,7 +1053,7 @@ def _generate_security_report(session_data: dict, session_id: str, user_id: str 
 
     # 读取模板
     template_path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
         "templates", "report_template.md"
     )
     try:
@@ -1126,11 +1126,11 @@ def _generate_security_report(session_data: dict, session_id: str, user_id: str 
     report = report.replace("{{CVE_KNOWLEDGE}}", cve_knowledge)
     report = report.replace("{{GENERATED_TIME}}", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"))
 
-    # 将报告作为制品存储
+    # 将报告作为制品存储（使用 doc 类型）
     try:
         from backend.api.artifacts_routes import store_artifact
         artifact_id = store_artifact(
-            "markdown",
+            "doc",
             f"安全报告_{target}",
             report,
             session_id=session_id,

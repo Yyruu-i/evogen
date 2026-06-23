@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import uuid
 from datetime import datetime, timezone
@@ -133,7 +134,40 @@ BROWSER_TOOLS: list[dict] = [
 ]
 
 # 全部工具（可后续扩展 terminal、web_search 等）
-ALL_TOOLS: list[dict] = BROWSER_TOOLS
+ALL_TOOLS: list[dict] = BROWSER_TOOLS + [
+    {
+        "type": "function",
+        "function": {
+            "name": "port_scan",
+            "description": "端口扫描 — 使用 nmap 扫描目标 IP/域名的开放端口和服务",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "目标 IP 或域名"},
+                    "ports": {"type": "string", "description": "端口范围，如 22,80,443 或 1-1000（默认 1-1000）"},
+                    "arguments": {"type": "string", "description": "额外 nmap 参数，如 -sV（版本检测） -sC（默认脚本）"},
+                },
+                "required": ["target"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "vuln_scan",
+            "description": "漏洞扫描 — 使用 Nuclei 对目标进行漏洞检测",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "目标 URL 或 IP"},
+                    "severity": {"type": "string", "description": "严重级别过滤，如 critical,high,medium（默认 critical,high）"},
+                    "templates": {"type": "string", "description": "指定 Nuclei 模板路径或类型"},
+                },
+                "required": ["target"],
+            },
+        },
+    },
+]
 
 # ── 工具调用限制 ──
 
@@ -528,6 +562,77 @@ def _load_recent_messages(session_id: str, max_messages: int = 20) -> list[dict]
 # ════════════════════════════════════════════════════════
 
 
+def _run_mcp_tool(script_path: str, method: str, arguments: dict) -> str:
+    """执行 MCP 子进程工具，返回格式化结果文本."""
+    import subprocess
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    full_path = os.path.join(project_root, script_path)
+
+    if not os.path.exists(full_path):
+        return f"❌ MCP 脚本不存在: {full_path}"
+
+    try:
+        payload = json.dumps(arguments)
+        result = subprocess.run(
+            ["python3", full_path, method, payload],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+
+        if result.returncode != 0:
+            return f"⚠️ MCP 工具执行异常 (exit={result.returncode}): {result.stderr[:500]}"
+
+        # 解析 JSON-RPC 响应
+        output = json.loads(result.stdout)
+        inner = output.get("result", {})
+        success = inner.get("success", False)
+        data = inner.get("data", {})
+        error = inner.get("error")
+
+        if not success:
+            return f"❌ {error or '执行失败'}"
+
+        # 格式化输出
+        lines = ["✅ 工具执行成功"]
+        if data.get("raw_command"):
+            lines.append(f"命令: {data['raw_command']}")
+
+        if method == "port_scan":
+            lines.append(f"目标: {data.get('target', '未知')}")
+            if data.get("hostname"):
+                lines.append(f"主机名: {data['hostname']}")
+            if data.get("os_guess"):
+                lines.append(f"OS: {data['os_guess']}")
+            open_ports = data.get("open_ports", [])
+            lines.append(f"开放端口: {len(open_ports)} 个")
+            for p in open_ports[:10]:
+                lines.append(f"  · {p['port']}/{p['protocol']}  {p['service']} [{p['state']}]")
+            if len(open_ports) > 10:
+                lines.append(f"  ... 还有 {len(open_ports) - 10} 个端口")
+            if data.get("summary"):
+                lines.append(f"摘要: {data['summary']}")
+
+        elif method == "vuln_scan":
+            findings = data.get("findings", [])
+            lines.append(f"发现漏洞: {data.get('total_findings', 0)} 个")
+            for f in findings[:10]:
+                lines.append(f"  · [{f['severity'].upper()}] {f['name']} — {f.get('matched_at', '')}")
+            if len(findings) > 10:
+                lines.append(f"  ... 还有 {len(findings) - 10} 个漏洞")
+            if data.get("warnings"):
+                lines.append(f"警告: {data['warnings'][:200]}")
+
+        return "\n".join(lines)
+
+    except json.JSONDecodeError:
+        return f"⚠️ MCP 响应解析失败: {result.stdout[:500]}"
+    except subprocess.TimeoutExpired:
+        return "⚠️ MCP 工具执行超时（300秒）"
+    except Exception as e:
+        return f"⚠️ MCP 工具异常: {str(e)[:200]}"
+
+
 async def _execute_tool(tool_name: str, arguments: dict, session_id: str, user_id: str = "default") -> str:
     """执行浏览器工具调用，返回结果文本。所有操作自动允许，无需用户确认。"""
     from backend.tools import get_browser_agent
@@ -609,6 +714,13 @@ async def _execute_tool(tool_name: str, arguments: dict, session_id: str, user_i
             if result.success:
                 return f"✅ 已在 {ref} 填入 '{text}'"
             return f"❌ 填写失败: {result.error}"
+
+        # ── 安全扫描工具（MCP 子进程调用）──
+        elif tool_name == "port_scan":
+            return _run_mcp_tool("scripts/mcp_nmap_server.py", "port_scan", arguments)
+
+        elif tool_name == "vuln_scan":
+            return _run_mcp_tool("scripts/mcp_nuclei_server.py", "vuln_scan", arguments)
 
         else:
             return f"未知工具: {tool_name}"
@@ -921,13 +1033,25 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
     system_prompt = await _build_system_prompt(session_id, message, user_id)
     system_prompt = build_search_augmented_prompt(system_prompt, message, search_context)
 
-    # 注入工具使用说明
+    # ── 注入工具使用说明
     system_prompt += (
         "\n\n## 可用工具\n"
         "你可以使用浏览器工具来打开网页、截图、点击元素、填写表单。\n"
         "当用户说'打开XX网站'、'帮我搜索'、'截图'等时，直接调用对应工具。\n"
         "所有工具操作自动执行，无需向用户确认。\n"
     )
+
+    # ── 漏洞知识库检索 ──
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from scripts.import_cve_knowledge import search_local, format_knowledge_for_prompt
+        kb_results = search_local(message, limit=3)
+        kb_text = format_knowledge_for_prompt(kb_results)
+        if kb_text:
+            system_prompt += kb_text
+            logger.debug(f"CVE knowledge base injected ({len(kb_results)} entries)")
+    except Exception as e:
+        logger.debug(f"CVE knowledge base skipped: {e}")
 
     # ── 构建对话消息列表 ──
     llm_messages: list[dict] = [{"role": "system", "content": system_prompt}]

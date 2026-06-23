@@ -85,6 +85,9 @@ def _static_tool_list() -> list[dict]:
         {"name": "skill_manage", "description": "创建/更新/删除技能", "toolset": "skills", "requires_env": [], "parameters": [{"name": "action", "type": "string", "description": "create/patch/edit/delete...", "required": True}, {"name": "name", "type": "string", "description": "技能名称", "required": True}]},
         {"name": "feishu_doc_read", "description": "读取飞书文档内容", "toolset": "feishu_doc", "requires_env": ["FEISHU_APP_ID"], "parameters": [{"name": "doc_token", "type": "string", "description": "文档token", "required": True}]},
         {"name": "feishu_drive_add_comment", "description": "在飞书文档中添加评论", "toolset": "feishu_drive", "requires_env": ["FEISHU_APP_ID"], "parameters": [{"name": "file_token", "type": "string", "description": "文件token", "required": True}, {"name": "content", "type": "string", "description": "评论内容", "required": True}]},
+        # ── 安全扫描工具 ──
+        {"name": "port_scan", "description": "端口扫描 — 使用 nmap 扫描目标 IP/域名的开放端口和服务", "toolset": "security", "requires_env": [], "parameters": [{"name": "target", "type": "string", "description": "目标 IP 或域名", "required": True}, {"name": "ports", "type": "string", "description": "端口范围，如 22,80,443 或 1-1000（默认 1-1000）", "required": False}, {"name": "arguments", "type": "string", "description": "额外 nmap 参数，如 -sV（版本检测） -sC（默认脚本）", "required": False}]},
+        {"name": "vuln_scan", "description": "漏洞扫描 — 使用 Nuclei 对目标进行漏洞检测", "toolset": "security", "requires_env": [], "parameters": [{"name": "target", "type": "string", "description": "目标 URL 或 IP", "required": True}, {"name": "severity", "type": "string", "description": "严重级别过滤，如 critical,high,medium（默认 critical,high）", "required": False}, {"name": "templates", "type": "string", "description": "指定 Nuclei 模板路径或类型", "required": False}]},
     ]
 
 

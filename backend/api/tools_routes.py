@@ -1,10 +1,11 @@
-"""Tools REST API — 从 Hermes tools 系统获取工具列表."""
+""""Tools REST API — 从 Hermes tools 系统获取工具列表 + 工具仓库版本管理."""
 
 import json
 import logging
+import os
 import subprocess
+from datetime import datetime, timezone
 from typing import Optional
-
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
@@ -165,3 +166,260 @@ async def delete_tool(name: str, user_id: str = Depends(get_current_user)):
     user_tools[:] = [t for t in user_tools if t["name"] != name]
     _tool_counts.pop(name, None)
     return {"ok": True}
+
+
+# ── 智能更新能力（工具仓库版本管理）──
+
+_TOOLS_REPO_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "data", "tools_repo.json",
+)
+_TOOLS_REPO: dict = {
+    "version": "1.0.0",
+    "tools": [],
+    "changelog": [],
+    "created_at": datetime.now(timezone.utc).isoformat(),
+    "updated_at": datetime.now(timezone.utc).isoformat(),
+}
+_TOOLS_BACKUP_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "data", "tools_backups",
+)
+
+
+def _load_tools_repo():
+    """加载持久化的工具仓库状态."""
+    global _TOOLS_REPO
+    try:
+        if os.path.exists(_TOOLS_REPO_FILE):
+            with open(_TOOLS_REPO_FILE, "r") as f:
+                _TOOLS_REPO = json.load(f)
+    except Exception as e:
+        logger.warning(f"Failed to load tools repo: {e}")
+
+
+def _save_tools_repo():
+    """持久化工具仓库状态."""
+    try:
+        os.makedirs(os.path.dirname(_TOOLS_REPO_FILE), exist_ok=True)
+        with open(_TOOLS_REPO_FILE, "w") as f:
+            json.dump(_TOOLS_REPO, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.warning(f"Failed to save tools repo: {e}")
+
+
+def _backup_current_repo():
+    """备份当前仓库状态用于回滚."""
+    try:
+        os.makedirs(_TOOLS_BACKUP_DIR, exist_ok=True)
+        version = _TOOLS_REPO.get("version", "0.0.0")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        backup_file = os.path.join(_TOOLS_BACKUP_DIR, f"tools_v{version}_{timestamp}.json")
+        with open(backup_file, "w") as f:
+            json.dump(_TOOLS_REPO, f, ensure_ascii=False, indent=2)
+        logger.info(f"Tools repo backed up to {backup_file}")
+        return backup_file
+    except Exception as e:
+        logger.warning(f"Failed to backup tools repo: {e}")
+        return None
+
+
+# 启动时加载
+_load_tools_repo()
+
+
+@router.get("/repo/status")
+async def get_tools_repo_status():
+    """获取工具仓库状态（版本号、工具数量、更新时间等）."""
+    return {
+        "ok": True,
+        "data": {
+            "version": _TOOLS_REPO.get("version", "1.0.0"),
+            "tool_count": len(_TOOLS_REPO.get("tools", [])),
+            "changelog_count": len(_TOOLS_REPO.get("changelog", [])),
+            "updated_at": _TOOLS_REPO.get("updated_at", ""),
+            "backup_dir": _TOOLS_BACKUP_DIR,
+        },
+    }
+
+
+@router.post("/repo/update")
+async def update_tools_repo(update_data: dict):
+    """更新工具仓库：批量下发更新包，增量更新.
+
+    支持两种更新模式：
+    1. 全量更新: {"mode": "full", "tools": [...], "version": "1.1.0", "changelog": [...]}
+    2. 增量更新: {"mode": "incremental", "changes": [{"action": "add|update|remove", "tool": {...}}], "version": "1.1.0"}
+    """
+    mode = update_data.get("mode", "full")
+    new_version = update_data.get("version", "")
+
+    if not new_version:
+        return {"ok": False, "error": "缺少版本号"}
+
+    # 比较版本号，确认是否需要更新
+    current_version = _TOOLS_REPO.get("version", "0.0.0")
+    if _version_compare(new_version, current_version) <= 0:
+        return {"ok": False, "error": f"版本 {new_version} 不高于当前版本 {current_version}，无需更新"}
+
+    # 备份当前状态
+    _backup_current_repo()
+
+    # 全量更新
+    if mode == "full":
+        tools = update_data.get("tools", [])
+        if not tools:
+            return {"ok": False, "error": "全量更新需要提供 tools 列表"}
+        _TOOLS_REPO["tools"] = tools
+        _TOOLS_REPO["version"] = new_version
+
+    # 增量更新
+    elif mode == "incremental":
+        changes = update_data.get("changes", [])
+        if not changes:
+            return {"ok": False, "error": "增量更新需要提供 changes 列表"}
+
+        existing_tools = {t["name"]: t for t in _TOOLS_REPO.get("tools", [])}
+        for change in changes:
+            action = change.get("action", "")
+            tool = change.get("tool", {})
+
+            if action == "add":
+                name = tool.get("name", "")
+                if name and name not in existing_tools:
+                    _TOOLS_REPO["tools"].append(tool)
+                    existing_tools[name] = tool
+            elif action == "update":
+                name = tool.get("name", "")
+                if name and name in existing_tools:
+                    # 仅更新提供的字段（增量更新）
+                    existing_tools[name].update(tool)
+            elif action == "remove":
+                name = tool.get("name", "")
+                _TOOLS_REPO["tools"] = [t for t in _TOOLS_REPO["tools"] if t.get("name") != name]
+
+        _TOOLS_REPO["version"] = new_version
+
+    else:
+        return {"ok": False, "error": f"未知更新模式: {mode}"}
+
+    # 记录变更日志
+    changelog_entry = {
+        "version": new_version,
+        "previous_version": current_version,
+        "mode": mode,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "changes": update_data.get("changelog", update_data.get("changes", [])),
+    }
+    _TOOLS_REPO.setdefault("changelog", []).append(changelog_entry)
+    _TOOLS_REPO["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+    _save_tools_repo()
+
+    return {
+        "ok": True,
+        "data": {
+            "version": new_version,
+            "previous_version": current_version,
+            "mode": mode,
+            "tool_count": len(_TOOLS_REPO["tools"]),
+            "changelog": changelog_entry,
+        },
+    }
+
+
+@router.get("/repo/changelog")
+async def get_tools_changelog(limit: int = 10):
+    """获取工具版本更新日志."""
+    logs = _TOOLS_REPO.get("changelog", [])
+    logs = logs[-limit:]
+    return {"ok": True, "data": {"entries": logs, "total": len(logs)}}
+
+
+@router.get("/repo/backups")
+async def list_tools_backups():
+    """列出可用的备份版本."""
+    backups = []
+    try:
+        os.makedirs(_TOOLS_BACKUP_DIR, exist_ok=True)
+        for f in sorted(os.listdir(_TOOLS_BACKUP_DIR), reverse=True):
+            if f.endswith(".json"):
+                path = os.path.join(_TOOLS_BACKUP_DIR, f)
+                size = os.path.getsize(path)
+                backups.append({"file": f, "size": size, "path": path})
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "data": {"backups": backups, "total": len(backups)}}
+
+
+@router.post("/repo/rollback/{version}")
+async def rollback_tools(version: str):
+    """按需回滚到指定版本.
+
+    从 backup 目录中查找匹配的备份文件并恢复。
+    也支持回滚到版本号。
+    """
+    # 查找匹配版本号的备份
+    try:
+        os.makedirs(_TOOLS_BACKUP_DIR, exist_ok=True)
+        target_file = None
+        for f in sorted(os.listdir(_TOOLS_BACKUP_DIR), reverse=True):
+            if f.endswith(".json") and version in f:
+                target_file = os.path.join(_TOOLS_BACKUP_DIR, f)
+                break
+
+        if not target_file:
+            return {"ok": False, "error": f"未找到版本 {version} 的备份"}
+
+        with open(target_file, "r") as f:
+            backup_data = json.load(f)
+
+        # 备份当前状态
+        _backup_current_repo()
+
+        # 回滚
+        current_version = _TOOLS_REPO.get("version", "0.0.0")
+        _TOOLS_REPO.clear()
+        _TOOLS_REPO.update(backup_data)
+        _TOOLS_REPO["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+        changelog_entry = {
+            "version": _TOOLS_REPO["version"],
+            "previous_version": current_version,
+            "mode": "rollback",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "changes": [f"从 {current_version} 回滚到 {_TOOLS_REPO['version']}"],
+        }
+        _TOOLS_REPO.setdefault("changelog", []).append(changelog_entry)
+
+        _save_tools_repo()
+
+        return {
+            "ok": True,
+            "data": {
+                "version": _TOOLS_REPO["version"],
+                "previous_version": current_version,
+                "tool_count": len(_TOOLS_REPO.get("tools", [])),
+            },
+        }
+
+    except Exception as e:
+        return {"ok": False, "error": f"回滚失败: {e}"}
+
+
+def _version_compare(v1: str, v2: str) -> int:
+    """比较两个语义版本号。v1 > v2 返回正数，v1 < v2 返回负数."""
+    try:
+        p1 = [int(x) for x in v1.replace("v", "").split(".")]
+        p2 = [int(x) for x in v2.replace("v", "").split(".")]
+        # 补齐到相同长度
+        while len(p1) < len(p2):
+            p1.append(0)
+        while len(p2) < len(p1):
+            p2.append(0)
+        for a, b in zip(p1, p2):
+            if a != b:
+                return a - b
+        return 0
+    except (ValueError, AttributeError):
+        return 0 if v1 == v2 else (1 if v1 > v2 else -1)

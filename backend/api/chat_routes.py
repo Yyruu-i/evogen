@@ -1,4 +1,4 @@
-"""Agent Chat SSE 端点 — 流式 LLM 对话（集成联网搜索 + 浏览器工具调用）."""
+"""Agent Chat SSE 端点 — 流式 LLM 对话（集成联网搜索 + 浏览器工具调用 + 自主规划多智能体协作）."""
 
 import asyncio
 import base64
@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import tempfile
 import uuid
 from datetime import datetime, timezone
@@ -125,6 +126,164 @@ ALL_TOOLS: list[dict] = BROWSER_TOOLS
 # ── 工具调用限制 ──
 
 MAX_TOOL_ITERATIONS = 8  # 最多工具调用轮数，防止死循环
+
+# ── 自主规划与多智能体协作 ──
+
+SUBTASK_DETECTION_PROMPT = """你是一个任务规划专家。请分析用户请求，判断它是否是一个复杂任务。
+
+复杂任务的判断标准：任务需要 2 个或更多不同领域的子任务才能完成，且这些子任务可以并行执行。
+例如：
+- "帮我开发一个登录功能" → 需要"设计数据库"、"编写后端API"、"开发前端页面"、"编写测试" → 复杂任务
+- "帮我查一下今天的天气" → 简单任务
+- "帮我写一个 Python 脚本解析 CSV 文件并生成报告" → 复杂任务（解析+生成报告可拆分）
+
+如果是复杂任务，请输出 JSON 格式：
+{"is_complex": true, "task_title": "任务标题", "subtasks": [{"id": 1, "name": "子任务名", "description": "子任务描述"}, ...]}
+
+如果是简单任务，请输出：
+{"is_complex": false}
+
+只输出 JSON，不要输出其他内容。"""
+
+
+async def _detect_complex_task(message: str) -> dict:
+    """使用 LLM 检测是否是复杂任务，返回拆解结果."""
+    url = f"{LLM_BASE_URL.rstrip('/')}/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {LLM_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": LLM_MODEL,
+        "messages": [
+            {"role": "system", "content": SUBTASK_DETECTION_PROMPT},
+            {"role": "user", "content": message},
+        ],
+        "temperature": 0.1,
+        "max_tokens": 1024,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+            if resp.status_code != 200:
+                return {"is_complex": False}
+            data = resp.json()
+            content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            # 提取 JSON
+            json_match = re.search(r'\{.*\}', content, re.DOTALL)
+            if json_match:
+                result = json.loads(json_match.group())
+                return result
+    except Exception as e:
+        logger.warning(f"Task decomposition failed: {e}")
+    return {"is_complex": False}
+
+
+async def _execute_subtask(subtask: dict, user_message: str, session_id: str, user_id: str) -> str:
+    """通过 Hermes CLI 调用子 Agent 执行子任务."""
+    prompt = f"""你是一个专门负责子任务 "{subtask['name']}" 的 Agent。
+子任务描述：{subtask['description']}
+原始用户请求：{user_message}
+
+请专注于完成分配给您的子任务，输出完整的结果。不要输出多余的元数据信息。"""
+    
+    try:
+        result = subprocess.run(
+            ["hermes", "chat", "--message", prompt, "--max-turns", "5", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env={**os.environ},
+        )
+        if result.returncode == 0:
+            try:
+                output = json.loads(result.stdout)
+                content = output.get("response", result.stdout)
+            except json.JSONDecodeError:
+                content = result.stdout
+        else:
+            content = f"⚠️ 子任务执行异常: {result.stderr[:500]}"
+    except subprocess.TimeoutExpired:
+        content = f"⚠️ 子任务执行超时（120秒）"
+    except FileNotFoundError:
+        # 没有 hermes CLI，使用 LLM 直接回复作为子任务结果
+        content = await _call_llm_for_subtask(prompt)
+    except Exception as e:
+        content = f"⚠️ 子任务执行失败: {str(e)[:200]}"
+
+    return f"## 子任务 {subtask['id']}: {subtask['name']}\n\n{content.strip()[:2000]}"
+
+
+async def _call_llm_for_subtask(prompt: str) -> str:
+    """后备方案：直接调用 LLM 作为子任务执行."""
+    url = f"{LLM_BASE_URL.rstrip('/')}/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {LLM_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": LLM_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.3,
+        "max_tokens": 2048,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+            if resp.status_code == 200:
+                return resp.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        logger.warning(f"Subtask LLM call failed: {e}")
+    return "（子任务执行失败）"
+
+
+async def _run_subtasks_concurrent(subtasks: list[dict], original_message: str, session_id: str, user_id: str) -> str:
+    """并发执行所有子任务，汇总结果."""
+    tasks = [
+        _execute_subtask(st, original_message, session_id, user_id)
+        for st in subtasks
+    ]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    parts = ["# 自主规划执行结果", f"## 原始请求\n{original_message}\n"]
+    for i, st in enumerate(subtasks):
+        r = results[i]
+        if isinstance(r, Exception):
+            r = f"⚠️ 子任务异常: {str(r)[:200]}"
+        parts.append(r)
+
+    return "\n\n---\n\n".join(parts)
+
+
+async def _generate_summary(original_message: str, subtask_results: str) -> str:
+    """由主 LLM 汇总子任务结果为最终回复."""
+    url = f"{LLM_BASE_URL.rstrip('/')}/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {LLM_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    prompt = f"""你是一个项目管理专家。以下是用户请求和各子任务的执行结果，请将它们整合成一份清晰、完整的最终回复。
+
+用户原始请求：{original_message}
+
+各子任务执行结果：
+{subtask_results}
+
+请对以上结果进行汇总，以连贯的叙述方式呈现，不要保留"子任务X"的标记格式。用中文回复。"""
+    payload = {
+        "model": LLM_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.3,
+        "max_tokens": 4096,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+            if resp.status_code == 200:
+                return resp.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        logger.warning(f"Summary generation failed: {e}")
+    return "（汇总生成失败）"
 
 
 class ChatRequest(BaseModel):
@@ -680,9 +839,52 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
             logger.warning(f"Tavily search failed: {e}")
 
     if not LLM_API_KEY:
-        yield f"data: {json.dumps({'chunk': '⚠️ 未配置 LLM API Key。请在 ~/.hermes/.env 中设置 DEEPSEEK_API_KEY。'})}\n\n"
-        yield "data: [DONE]\n\n"
+        yield f"data: {json.dumps({'chunk': '⚠️ 未配置 LLM API Key。请在 ~/.hermes/.env 中设置 DEEPSEEK_API_KEY。'})}\\n\\n"
+        yield "data: [DONE]\\n\\n"
         return
+
+    # ── 自主规划与多智能体协作（复杂任务检测） ──
+    # 只在首个用户消息（无历史对话）或明确的新任务时触发
+    should_decompose = not recent_history
+    if should_decompose:
+        yield f"data: {json.dumps({'status': 'decomposing', 'message': '正在分析任务复杂度…'})}\\n\\n"
+        task_plan = await _detect_complex_task(message)
+        if task_plan.get("is_complex") and len(task_plan.get("subtasks", [])) >= 2:
+            subtasks = task_plan["subtasks"]
+            task_title = task_plan.get("task_title", "复杂任务")
+            yield f"data: {json.dumps({'status': 'task_plan', 'task_title': task_title, 'subtasks': [{'id': s['id'], 'name': s['name']} for s in subtasks]})}\\n\\n"
+
+            # 保存系统消息
+            _save_message(session_id, "system",
+                f"📋 已识别复杂任务「{task_title}」，拆解为 {len(subtasks)} 个子任务：{'、'.join(s['name'] for s in subtasks)}")
+
+            # 通知前端：开始并行执行
+            yield f"data: {json.dumps({'status': 'executing_subtasks', 'subtasks': [s['name'] for s in subtasks]})}\\n\\n"
+
+            # 并行执行子任务
+            subtask_results = await _run_subtasks_concurrent(subtasks, message, session_id, user_id)
+
+            # 保存执行结果
+            _save_message(session_id, "system", subtask_results[:500])
+
+            # 通知前端：开始汇总
+            yield f"data: {json.dumps({'status': 'summarizing', 'message': '正在汇总子任务结果…'})}\\n\\n"
+
+            # 汇总结果
+            summary = await _generate_summary(message, subtask_results)
+
+            # 流式输出汇总结果
+            _save_message(session_id, "assistant", summary)
+            await _record_experience(session_id, message, summary, user_id=user_id)
+
+            # 流式输出
+            for i in range(0, len(summary), 30):
+                yield f"data: {json.dumps({'chunk': summary[i:i+30]})}\\n\\n"
+                await asyncio.sleep(0.005)
+            yield "data: [DONE]\\n\\n"
+            return
+        else:
+            yield f"data: {json.dumps({'status': 'skip_decompose', 'message': '简单任务，直接处理'})}\\n\\n"
 
     # ── 构建 system prompt（含人格 + 记忆 + 搜索上下文 + 工具说明） ──
     system_prompt = await _build_system_prompt(session_id, message, user_id)

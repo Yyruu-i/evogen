@@ -371,6 +371,17 @@ export const systemApi = {
     return request<import('@/types').LogListResponse>(`/system/logs?${qs}`);
   },
 
+  getConfig() {
+    return request<Record<string, unknown>>('/system/config');
+  },
+
+  updateConfig(config: Record<string, unknown>) {
+    return request<Record<string, unknown>>('/system/config', {
+      method: 'PUT',
+      body: JSON.stringify(config),
+    });
+  },
+
   capacity() {
     return request<import('@/types').MemoryCapacityResponse>('/memory/capacity');
   },

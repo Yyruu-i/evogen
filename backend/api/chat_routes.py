@@ -125,7 +125,8 @@ ALL_TOOLS: list[dict] = BROWSER_TOOLS
 
 # ── 工具调用限制 ──
 
-MAX_TOOL_ITERATIONS = 8  # 最多工具调用轮数，防止死循环
+MAX_TOOL_ITERATIONS = 8  # 最多工具调用轮数，防止死循环（单个工具循环内）
+# 总轮次限制通过 config.max_agent_rounds 配置（对话+工具调用总和）
 
 # ── 自主规划与多智能体协作 ──
 
@@ -683,8 +684,15 @@ async def _tool_loop_stream_generator(
     """
     iteration = 0
     full_text_response = ""
+    max_rounds = MAX_TOOL_ITERATIONS
+    # 读取运行时配置的总轮次上限（每个工具迭代轮数限制）
+    try:
+        from backend.api.system_routes import get_config_value
+        max_rounds = min(get_config_value("max_agent_rounds", 90) or 90, 200)
+    except Exception:
+        pass
 
-    while iteration < MAX_TOOL_ITERATIONS:
+    while iteration < max_rounds:
         iteration += 1
 
         # 调用 LLM（非流式，带工具定义）

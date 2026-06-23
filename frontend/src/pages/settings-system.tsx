@@ -1,7 +1,8 @@
 import { useQuery } from '@tanstack/react-query';
 import { systemApi } from '@/lib/api';
 import { Skeleton } from '@/components/shared/skeleton';
-import { Terminal, CheckCircle, XCircle, Database } from 'lucide-react';
+import { Terminal, CheckCircle, XCircle, Database, Settings2 } from 'lucide-react';
+import { useState, useEffect } from 'react';
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -155,7 +156,97 @@ export function SettingsSystemPage() {
 
         {/* System logs */}
         <SystemLogs />
+
+        {/* ── Agent 配置区域 ── */}
+        <AgentConfigPanel />
       </div>
+    </div>
+  );
+}
+
+function AgentConfigPanel() {
+  const [maxRounds, setMaxRounds] = useState(90);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const { data: config, isLoading } = useQuery({
+    queryKey: ['system', 'config'],
+    queryFn: () => systemApi.getConfig(),
+    staleTime: 30000,
+  });
+
+  useEffect(() => {
+    if (config?.max_agent_rounds) {
+      setMaxRounds(Number(config.max_agent_rounds));
+    }
+  }, [config]);
+
+  const handleSave = async () => {
+    setSaving(true);
+    setSaved(false);
+    try {
+      await systemApi.updateConfig({ max_agent_rounds: maxRounds });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (err) {
+      console.error('Failed to save config:', err);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="glass-card p-5">
+      <div className="flex items-center gap-3 mb-4">
+        <div className="w-10 h-10 rounded-xl bg-accent/10 flex items-center justify-center">
+          <Settings2 className="w-5 h-5" style={{ color: 'var(--color-accent)' }} />
+        </div>
+        <div>
+          <p className="text-[14px] font-semibold">Agent 配置</p>
+          <p className="text-[11px] text-muted">运行时配置，修改后即时生效</p>
+        </div>
+      </div>
+
+      {isLoading ? (
+        <div className="space-y-2">
+          <Skeleton className="h-10 w-full" />
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <div>
+            <label className="text-[12px] font-medium text-secondary block mb-1.5">
+              最大执行轮次
+            </label>
+            <div className="flex items-center gap-3">
+              <input
+                type="number"
+                value={maxRounds}
+                onChange={(e) => setMaxRounds(Math.max(1, Math.min(500, Number(e.target.value) || 1)))}
+                className="w-24"
+                min={1}
+                max={500}
+              />
+              <button
+                onClick={handleSave}
+                disabled={saving}
+                className="px-4 py-1.5 text-[12px] font-medium rounded-lg transition-all"
+                style={{
+                  background: saved
+                    ? 'rgba(0,255,136,0.15)'
+                    : 'linear-gradient(135deg, var(--color-accent), var(--color-coral))',
+                  color: saved ? 'var(--color-mint)' : '#fff',
+                }}
+              >
+                {saving ? '保存中…' : saved ? '✓ 已保存' : '保存'}
+              </button>
+            </div>
+            <p className="text-[11px] text-muted mt-1">
+              Agent 单次对话的最大执行轮次（含工具调用）。默认 90，范围 1~500。
+              <br />
+              设置为较小值（如 3）可测试轮次上限自动终止功能。
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

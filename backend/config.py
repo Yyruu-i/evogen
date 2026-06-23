@@ -43,6 +43,10 @@ class EvoGenConfig:
         "LLM_BASE_URL", "https://api.deepseek.com"
     ))
 
+    # ── Agent 配置 ──
+    max_agent_rounds: int = field(default_factory=lambda: int(os.getenv("MAX_AGENT_ROUNDS", "90")))
+    """Agent 最大执行轮次（工具调用 + 对话轮次总和），防止死循环。默认 90。"""
+
     # ── FastAPI 配置 ──
     api_host: str = "0.0.0.0"
     api_port: int = 8100

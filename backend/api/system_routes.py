@@ -303,9 +303,75 @@ def _read_recent_logs(
     return entries
 
 
+# ─────────────────────────────────────────────────────
+# 系统配置（可运行时修改）
+# ─────────────────────────────────────────────────────
+
+# 运行时配置（内存中，重启后重置，可由前端设置页修改）
+_runtime_config: dict = {
+    "max_agent_rounds": 90,
+}
+
+# 持久化配置文件路径
+_CONFIG_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)), "runtime_config.json"
+)
+
+
+def _save_runtime_config():
+    """持久化运行时配置到 JSON 文件."""
+    try:
+        with open(_CONFIG_FILE, "w") as f:
+            json.dump(_runtime_config, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.warning(f"Failed to save runtime config: {e}")
+
+
+def _load_runtime_config():
+    """启动时从 JSON 文件加载运行时配置."""
+    try:
+        if os.path.exists(_CONFIG_FILE):
+            with open(_CONFIG_FILE, "r") as f:
+                data = json.load(f)
+                _runtime_config.update(data)
+    except Exception as e:
+        logger.warning(f"Failed to load runtime config: {e}")
+
+
+# 启动时加载持久化配置
+_load_runtime_config()
+
+
+@router.get("/config")
+async def get_config():
+    """获取系统运行时配置."""
+    return {"ok": True, "data": {**_runtime_config}}
+
+
+@router.put("/config")
+async def update_config(config: dict):
+    """更新系统运行时配置."""
+    allowed_keys = {"max_agent_rounds"}
+    for key, value in config.items():
+        if key in allowed_keys:
+            if key == "max_agent_rounds":
+                value = max(1, min(int(value), 500))
+            _runtime_config[key] = value
+    _save_runtime_config()
+    return {"ok": True, "data": {**_runtime_config}}
+
+
+# 提供一个同步读取配置的函数，供其他模块使用
+def get_config_value(key: str, default=None):
+    return _runtime_config.get(key, default)
+
+
 # ════════════════════════════════════════════════════════
 # GET /api/v1/system/logs
 # ════════════════════════════════════════════════════════
+
+
+@router.get("/logs")
 
 
 @router.get("/logs")

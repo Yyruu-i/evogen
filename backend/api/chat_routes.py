@@ -630,6 +630,8 @@ async def _call_llm_nonstream(
         "temperature": 0.7,
         "max_tokens": 4096,
     }
+    # 尝试获取 reasoning（DeepSeek R1 等模型支持）
+    payload["reasoning_model"] = True  # 暗示需要 reasoning
     if tools:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
@@ -644,6 +646,8 @@ async def _call_llm_nonstream(
         data = resp.json()
         choice = data.get("choices", [{}])[0]
         msg = choice.get("message", {})
+        # 提取 reasoning_content（DeepSeek R1 等模型返回）
+        reasoning = msg.get("reasoning_content") or choice.get("reasoning_content") or ""
 
         # 检查 tool_calls
         raw_tool_calls = msg.get("tool_calls")
@@ -660,9 +664,9 @@ async def _call_llm_nonstream(
                     "name": fn.get("name", ""),
                     "arguments": args,
                 })
-            return {"content": msg.get("content"), "tool_calls": tool_calls}
+            return {"content": msg.get("content"), "tool_calls": tool_calls, "reasoning": reasoning}
 
-        return {"content": msg.get("content", ""), "tool_calls": None}
+        return {"content": msg.get("content", ""), "tool_calls": None, "reasoning": reasoning}
 
 
 # ════════════════════════════════════════════════════════
@@ -747,6 +751,13 @@ async def _tool_loop_stream_generator(
         # ── 情况 2：纯文本响应 → 流式输出 ──
         text = result.get("content") or ""
         full_text_response = text
+        reasoning = result.get("reasoning") or ""
+
+        # 如果有 reasoning_content，先发送推理过程（思考模式）
+        if reasoning:
+            yield f"data: {json.dumps({'status': 'reasoning', 'reasoning': reasoning})}\\n\\n"
+            # 短暂延迟，确保前端有时间渲染思考区域
+            await asyncio.sleep(0.05)
 
         if text:
             # 流式输出文本（逐字输出模拟流式体验）

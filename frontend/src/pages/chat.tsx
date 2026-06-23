@@ -24,6 +24,7 @@ export function ChatPage() {
   const streamingRef = useRef(false);
   const [streamingUi, setStreamingUi] = useState(false);
   const [thinkingExpanded, setThinkingExpanded] = useState(false);
+  const [reasoningText, setReasoningText] = useState('');
   const thinkingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const qc = useQueryClient();
   const { state: chat, setMessages, setStreaming, setActiveSession, updateLastAssistant, finalizeLastAssistant, clearMessages } = useChatContext();
@@ -97,6 +98,7 @@ export function ChatPage() {
     streamingRef.current = true;
     setStreamingUi(true);
     setThinkingExpanded(true);
+    setReasoningText('');
     if (thinkingTimerRef.current) clearTimeout(thinkingTimerRef.current);
 
     // Fire-and-forget async SSE — state updates via stable refs
@@ -106,8 +108,8 @@ export function ChatPage() {
       // Keep streaming UI visible for minimum 800ms so thinking bar renders
       setTimeout(() => {
         setStreamingUi(false);
-        // Auto-collapse thinking after 1.5s
-        thinkingTimerRef.current = setTimeout(() => setThinkingExpanded(false), 1500);
+        // Auto-collapse thinking after 3s (longer so user can read reasoning)
+        thinkingTimerRef.current = setTimeout(() => setThinkingExpanded(false), 3000);
       }, 800);
       qc.invalidateQueries({ queryKey: ['sessions'] });
       if (activeId) {
@@ -123,6 +125,8 @@ export function ChatPage() {
   finalizeLastAssistantRef.current = finalizeLastAssistant;
   const setSearchParamsRef = useRef(setSearchParams);
   setSearchParamsRef.current = setSearchParams;
+  const setReasoningTextRef = useRef(setReasoningText);
+  setReasoningTextRef.current = setReasoningText;
 
   const sendMessageAndStream = useCallback(async (text: string, activeId: string) => {
     const B = window.location.origin;
@@ -156,6 +160,12 @@ export function ChatPage() {
             const parsed = JSON.parse(data);
             if (parsed.session && !activeId) {
               pendingSessionRef.current = parsed.session;
+            }
+            // ── 思考模式：接收 reasoning 事件 ──
+            if (parsed.status === 'reasoning' && parsed.reasoning) {
+              setReasoningTextRef.current(parsed.reasoning);
+              setThinkingExpanded(true);
+              continue;
             }
             if (parsed.chunk) {
               updateLastAssistantRef.current(parsed.chunk, 'sse-');
@@ -241,7 +251,7 @@ export function ChatPage() {
       {/* ── Content ────────────────────────────────────────────── */}
       <main className="flex flex-col flex-1">
         {/* ── Thinking bar (above all content) ──────────────── */}
-        {(streamingUi || thinkingExpanded) && (
+        {(streamingUi || thinkingExpanded || reasoningText) && (
           <div className="px-4 md:px-6 pt-3">
             <div className="max-w-3xl mx-auto">
               <button
@@ -260,7 +270,7 @@ export function ChatPage() {
                 )}
                 <Brain className="w-3.5 h-3.5 flex-shrink-0" style={{ color: 'var(--color-holo)' }} />
                 <span className="flex-1 text-left">
-                  {streamingUi ? '思考中…' : '思考过程'}
+                  {streamingUi && !reasoningText ? '思考中…' : '思考过程'}
                 </span>
                 {streamingUi && (
                   <span className="flex items-center gap-1">
@@ -272,15 +282,16 @@ export function ChatPage() {
               </button>
               {thinkingExpanded && (
                 <div
-                  className="mt-1.5 px-3 py-2 rounded-lg text-[12px] leading-relaxed max-h-32 overflow-y-auto"
+                  className="mt-1.5 px-3 py-2 rounded-lg text-[12px] leading-relaxed max-h-64 overflow-y-auto"
                   style={{
                     background: 'rgba(184,192,255,0.03)',
                     border: '1px solid rgba(184,192,255,0.08)',
                     color: 'var(--color-text-muted)',
                     fontFamily: 'var(--font-mono)',
+                    whiteSpace: 'pre-wrap',
                   }}
                 >
-                  {chat.messages.filter(m => m.id.startsWith('sse-') || m.id.startsWith('streaming-')).map(m => m.content).join('') || '正在分析…'}
+                  {reasoningText || (streamingUi ? '正在分析…' : '无推理过程')}
                 </div>
               )}
             </div>

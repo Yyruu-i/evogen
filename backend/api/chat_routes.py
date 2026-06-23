@@ -813,6 +813,8 @@ async def _tool_loop_stream_generator(
     iteration = 0
     full_text_response = ""
     max_rounds = MAX_TOOL_ITERATIONS
+    # 记录本轮扫描的上下文（用于报告生成）
+    session_scan_data: dict[str, dict] = {}
     # 读取运行时配置的总轮次上限（每个工具迭代轮数限制）
     try:
         from backend.api.system_routes import get_config_value
@@ -848,7 +850,11 @@ async def _tool_loop_stream_generator(
                     f"🔧 调用工具: {tool_name}({json.dumps(tool_args, ensure_ascii=False)})\n结果: {tool_result[:500]}")
 
                 # 通知前端：工具执行完成
-                yield f"data: {json.dumps({'status': 'tool_result', 'tool': tool_name, 'result': tool_result[:300]})}\n\n"
+                yield f"data: {json.dumps({'status': 'tool_result', 'tool': tool_name, 'result': tool_result[:300]})}\\n\\n"
+
+                # 收集扫描数据（用于报告）
+                if tool_name in ("port_scan", "vuln_scan"):
+                    session_scan_data[tool_name] = _extract_tool_data(tool_name, tool_result)
 
                 # 将工具调用和结果追加到 messages
                 llm_messages.append({
@@ -914,6 +920,205 @@ async def _tool_loop_stream_generator(
             logger.warning(f"Artifact extraction failed: {e}")
 
     yield "data: [DONE]\n\n"
+
+    # ── 安全扫描报告自动生成 ──
+    if session_scan_data:
+        try:
+            report = _generate_security_report(session_scan_data, session_id, user_id=user_id)
+            if report:
+                quality = _validate_report_quality(report)
+                logger.info(f"Security report generated. Quality check: {'PASS' if quality['pass'] else 'FAIL'} "
+                           f"({quality['passed_checks']}/{quality['total_checks']})")
+                if not quality["pass"]:
+                    logger.warning(f"Report quality issues: {quality['issues']}")
+        except Exception as e:
+            logger.warning(f"Report generation failed: {e}")
+
+
+def _extract_tool_data(tool_name: str, raw_result: str) -> dict:
+    """从工具调用结果中提取关键字段."""
+    data: dict = {"tool": tool_name}
+    if tool_name == "port_scan":
+        data["open_ports"] = []
+        data["total_ports"] = 0
+        data["command"] = ""
+        data["target"] = ""
+        for line in raw_result.split("\n"):
+            if line.startswith("命令: "):
+                data["command"] = line[4:]
+            elif line.startswith("目标: "):
+                data["target"] = line[4:]
+            elif line.startswith("开放端口:"):
+                try:
+                    data["total_ports"] = int(line.split(":")[1].strip().rstrip("个").strip())
+                except (ValueError, IndexError):
+                    pass
+            elif "·" in line:
+                m = re.search(r"(\d+)/(\w+)\s+(\S+)", line)
+                if m:
+                    data.setdefault("open_ports", []).append({
+                        "port": int(m.group(1)),
+                        "protocol": m.group(2),
+                        "service": m.group(3),
+                    })
+        return data
+    elif tool_name == "vuln_scan":
+        data["findings"] = []
+        data["total_findings"] = 0
+        data["command"] = ""
+        data["target"] = ""
+        for line in raw_result.split("\n"):
+            if line.startswith("命令: "):
+                data["command"] = line[4:]
+            elif line.startswith("目标: "):
+                data["target"] = line[4:]
+            elif line.startswith("发现漏洞:"):
+                try:
+                    data["total_findings"] = int(line.split(":")[1].strip().rstrip("个").strip())
+                except (ValueError, IndexError):
+                    pass
+            elif "· [" in line:
+                m = re.search(r"\[(\w+)\]\s+(.+?)\s+[—–]\s+(.*)", line)
+                if m:
+                    data.setdefault("findings", []).append({
+                        "severity": m.group(1),
+                        "name": m.group(2),
+                        "matched_at": m.group(3),
+                    })
+        return data
+    return data
+
+
+def _generate_security_report(session_data: dict, session_id: str, user_id: str = "default") -> str | None:
+    """根据工具执行数据自动生成安全扫描报告."""
+    port_data = session_data.get("port_scan", {})
+    vuln_data = session_data.get("vuln_scan", {})
+    target = port_data.get("target") or vuln_data.get("target") or "未知"
+
+    if not port_data and not vuln_data:
+        return None
+
+    # 读取模板
+    template_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "templates", "report_template.md"
+    )
+    try:
+        with open(template_path, "r") as f:
+            template = f.read()
+    except FileNotFoundError:
+        logger.warning("报告模板不存在")
+        return None
+
+    from datetime import datetime, timezone
+
+    # 端口表格
+    port_rows = ""
+    for p in port_data.get("open_ports", []):
+        port_rows += f"| {p['port']} | {p['protocol']} | {p['service']} | open |\n"
+    if not port_rows:
+        port_rows = "| - | - | - | 无开放端口 |\n"
+
+    # 漏洞详情
+    vuln_details = ""
+    severity_counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+    for f in vuln_data.get("findings", []):
+        sev = f.get("severity", "").upper()
+        if sev in severity_counts:
+            severity_counts[sev] += 1
+        icon = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "🟢"}.get(sev, "⚪")
+        vuln_details += f"- {icon} **[{sev}] {f.get('name', '未知')}** — {f.get('matched_at', '')}\n"
+    if not vuln_details:
+        vuln_details = "未发现已知漏洞。"
+
+    # 建议
+    recommendations = []
+    if severity_counts["CRITICAL"] > 0:
+        recommendations.append("🔴 立即修复严重漏洞：存在可被远程利用的严重安全风险，建议优先处理。")
+    if severity_counts["HIGH"] > 0:
+        recommendations.append("🟠 尽快修复高危漏洞：高风险漏洞可能被用于提权或横向移动。")
+    if port_data.get("open_ports"):
+        ports_list = [str(p["port"]) for p in port_data.get("open_ports", [])]
+        recommendations.append(f"🔓 建议关闭不必要的开放端口（{', '.join(ports_list)}），减少攻击面。")
+    if not recommendations:
+        recommendations.append("✅ 当前目标无明显安全风险，建议定期进行安全扫描。")
+
+    # CVE 知识
+    cve_knowledge = ""
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from scripts.import_cve_knowledge import search_local, format_knowledge_for_prompt
+        kb_results = search_local(f"安全扫描 {target}", limit=3)
+        cve_knowledge = format_knowledge_for_prompt(kb_results) or "无相关漏洞知识。"
+    except Exception:
+        cve_knowledge = "无相关漏洞知识。"
+
+    report = template
+    report = report.replace("{{TASK_TITLE}}", f"安全扫描: {target}")
+    report = report.replace("{{TARGET}}", target)
+    report = report.replace("{{SCAN_TIME}}", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"))
+    report = report.replace("{{SCAN_TYPE}}", "端口扫描 + 漏洞扫描" if port_data and vuln_data else ("端口扫描" if port_data else "漏洞扫描"))
+    report = report.replace("{{STATUS}}", "✅ 完成")
+    report = report.replace("{{PORT_SCAN_CMD}}", port_data.get("command", "N/A"))
+    report = report.replace("{{PORT_TABLE}}", port_rows)
+    report = report.replace("{{PORT_SUMMARY}}", f"发现 {port_data.get('total_ports', 0)} 个开放端口")
+    report = report.replace("{{VULN_SCAN_CMD}}", vuln_data.get("command", "N/A"))
+    report = report.replace("{{VULN_TOTAL}}", str(vuln_data.get("total_findings", 0)))
+    report = report.replace("{{VULN_DETAILS}}", vuln_details)
+    report = report.replace("{{CRITICAL_COUNT}}", str(severity_counts["CRITICAL"]))
+    report = report.replace("{{HIGH_COUNT}}", str(severity_counts["HIGH"]))
+    report = report.replace("{{MEDIUM_COUNT}}", str(severity_counts["MEDIUM"]))
+    report = report.replace("{{LOW_COUNT}}", str(severity_counts["LOW"]))
+    report = report.replace("{{RECOMMENDATIONS}}", "\n".join(recommendations))
+    report = report.replace("{{CVE_KNOWLEDGE}}", cve_knowledge)
+    report = report.replace("{{GENERATED_TIME}}", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"))
+
+    # 将报告作为制品存储
+    try:
+        from backend.api.artifacts_routes import store_artifact
+        artifact_id = store_artifact(
+            "markdown",
+            f"安全报告_{target}",
+            report,
+            session_id=session_id,
+            user_id=user_id,
+        )
+        logger.info(f"Security report artifact stored: {artifact_id}")
+    except Exception as e:
+        logger.warning(f"Failed to store report artifact: {e}")
+
+    return report
+
+
+def _validate_report_quality(report: str) -> dict:
+    """校验报告质量：完整性、格式、数值."""
+    issues = []
+    checks = {
+        "has_title": "安全扫描报告" in report,
+        "has_target": "{{TARGET}}" not in report and "扫描目标" in report,
+        "has_port_table": "| 端口 |" in report,
+        "has_vuln_section": "## 2. 漏洞扫描结果" in report,
+        "has_risk_analysis": "## 3. 风险分析与建议" in report,
+        "has_recommendations": "### 建议措施" in report,
+        "has_cve_knowledge": "## 4. 相关漏洞知识" in report,
+        "no_unfilled_template": "{{" not in report,
+    }
+    for check, passed in checks.items():
+        if not passed:
+            issues.append(f"缺失: {check}")
+
+    # 数值校验
+    import re
+    all_nums = re.findall(r"\|\s*(\d+)\s*\|", report)
+    if all_nums and all(g == "0" for g in all_nums):
+        issues.append("警告: 所有风险级别数量为0，可能数据未正确填充")
+
+    return {
+        "pass": len(issues) == 0,
+        "issues": issues,
+        "total_checks": len(checks),
+        "passed_checks": sum(1 for v in checks.values() if v),
+    }
 
 
 async def _llm_stream_generator(message: str, session_id: str, user_id: str = "default"):

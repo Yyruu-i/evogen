@@ -310,6 +310,7 @@ def _read_recent_logs(
 # 运行时配置（内存中，重启后重置，可由前端设置页修改）
 _runtime_config: dict = {
     "max_agent_rounds": 90,
+    "llm_model": os.getenv("LLM_MODEL", "deepseek-chat"),
 }
 
 # 持久化配置文件路径
@@ -351,7 +352,7 @@ async def get_config():
 @router.put("/config")
 async def update_config(config: dict):
     """更新系统运行时配置."""
-    allowed_keys = {"max_agent_rounds"}
+    allowed_keys = {"max_agent_rounds", "llm_model"}
     for key, value in config.items():
         if key in allowed_keys:
             if key == "max_agent_rounds":

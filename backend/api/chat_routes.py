@@ -44,6 +44,18 @@ LLM_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 LLM_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 LLM_MODEL = os.getenv("LLM_MODEL", "deepseek-chat")
 
+
+def _get_current_model() -> str:
+    """获取当前使用的模型（优先从运行时配置读取）。"""
+    try:
+        from backend.api.system_routes import get_config_value
+        runtime_model = get_config_value("llm_model", LLM_MODEL)
+        if runtime_model:
+            return str(runtime_model)
+    except Exception:
+        pass
+    return LLM_MODEL
+
 # ── Browser 工具定义 (OpenAI function-calling 格式) ──
 
 BROWSER_TOOLS: list[dict] = [
@@ -155,7 +167,7 @@ async def _detect_complex_task(message: str) -> dict:
         "Content-Type": "application/json",
     }
     payload = {
-        "model": LLM_MODEL,
+        "model": _get_current_model(),
         "messages": [
             {"role": "system", "content": SUBTASK_DETECTION_PROMPT},
             {"role": "user", "content": message},
@@ -223,7 +235,7 @@ async def _call_llm_for_subtask(prompt: str) -> str:
         "Content-Type": "application/json",
     }
     payload = {
-        "model": LLM_MODEL,
+        "model": _get_current_model(),
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.3,
         "max_tokens": 2048,
@@ -272,7 +284,7 @@ async def _generate_summary(original_message: str, subtask_results: str) -> str:
 
 请对以上结果进行汇总，以连贯的叙述方式呈现，不要保留"子任务X"的标记格式。用中文回复。"""
     payload = {
-        "model": LLM_MODEL,
+        "model": _get_current_model(),
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.3,
         "max_tokens": 4096,
@@ -625,7 +637,7 @@ async def _call_llm_nonstream(
         "Content-Type": "application/json",
     }
     payload: dict = {
-        "model": LLM_MODEL,
+        "model": _get_current_model(),
         "messages": messages,
         "temperature": 0.7,
         "max_tokens": 4096,

@@ -717,10 +717,21 @@ async def _execute_tool(tool_name: str, arguments: dict, session_id: str, user_i
 
         # ── 安全扫描工具（MCP 子进程调用）──
         elif tool_name == "port_scan":
-            return _run_mcp_tool("scripts/mcp_nmap_server.py", "port_scan", arguments)
+            result = _run_mcp_tool("scripts/mcp_nmap_server.py", "port_scan", arguments)
+            if "❌" in result:
+                # 失败自动切换 fallback
+                fallback_args = dict(arguments)
+                fallback_result = _run_mcp_tool("scripts/mcp_nuclei_server.py", "vuln_scan", fallback_args)
+                return f"⚠️ port_scan 失败，已切换至 vuln_scan:\n{fallback_result}"
+            return result
 
         elif tool_name == "vuln_scan":
-            return _run_mcp_tool("scripts/mcp_nuclei_server.py", "vuln_scan", arguments)
+            result = _run_mcp_tool("scripts/mcp_nuclei_server.py", "vuln_scan", arguments)
+            if "❌" in result:
+                fallback_args = dict(arguments)
+                fallback_result = _run_mcp_tool("scripts/mcp_nmap_server.py", "port_scan", fallback_args)
+                return f"⚠️ vuln_scan 失败，已切换至 port_scan:\n{fallback_result}"
+            return result
 
         else:
             return f"未知工具: {tool_name}"
@@ -919,7 +930,7 @@ async def _tool_loop_stream_generator(
         except Exception as e:
             logger.warning(f"Artifact extraction failed: {e}")
 
-    yield "data: [DONE]\n\n"
+    yield "data: [DONE]\\n\\n"
 
     # ── 安全扫描报告自动生成 ──
     if session_scan_data:
@@ -933,6 +944,48 @@ async def _tool_loop_stream_generator(
                     logger.warning(f"Report quality issues: {quality['issues']}")
         except Exception as e:
             logger.warning(f"Report generation failed: {e}")
+
+
+def _recommend_tools(query: str) -> str:
+    """基于消息内容做语义匹配，推荐最适配的工具。
+
+    使用关键词匹配（简单但有效的语义推荐），返回推荐文本。
+    """
+    recommendations = []
+
+    # 安全扫描关键词
+    scan_keywords = ["扫描", "端口", "漏洞", "安全检测", "渗透", "nmap", "nuclei",
+                     "开放端口", "服务检测", "cve", "入侵", "攻击面", "靶场", "靶机"]
+    if any(kw in query.lower() for kw in scan_keywords):
+        recommendations.append(
+            "- 🔍 **端口扫描** (`port_scan`): 检测目标开放端口和服务版本\n"
+            "- 🛡️ **漏洞扫描** (`vuln_scan`): 使用 Nuclei 检测已知漏洞\n"
+            "- 📖 **漏洞知识库**: 自动检索相关 CVE 漏洞信息"
+        )
+
+    # 网页/浏览器相关
+    browser_keywords = ["打开", "网页", "网站", "浏览器", "截图", "url", "http", "页面"]
+    if any(kw in query.lower() for kw in browser_keywords):
+        recommendations.append(
+            "- 🌐 **浏览器导航** (`browser_navigate`): 打开指定网页\n"
+            "- 📸 **截图** (`browser_screenshot`): 截取当前页面"
+        )
+
+    # 搜索相关
+    search_keywords = ["搜索", "查找", "查询", "资料", "信息", "找"]
+    if any(kw in query.lower() for kw in search_keywords):
+        recommendations.append(
+            "- 🔎 **联网搜索**: Agent 将自动搜索互联网获取最新信息"
+        )
+
+    # 如果没有任何匹配，给出通用推荐
+    if not recommendations:
+        recommendations.append(
+            "- 💬 **直接对话**: 我可以直接回答您的问题\n"
+            "- 🔧 需要安全扫描或浏览器操作时，我会自动调用相应工具"
+        )
+
+    return "\n".join(recommendations)
 
 
 def _extract_tool_data(tool_name: str, raw_result: str) -> dict:
@@ -1257,6 +1310,14 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
             logger.debug(f"CVE knowledge base injected ({len(kb_results)} entries)")
     except Exception as e:
         logger.debug(f"CVE knowledge base skipped: {e}")
+
+    # ── 工具语义推荐（基于消息内容推荐最适配工具）──
+    try:
+        tool_recommendations = _recommend_tools(message)
+        if tool_recommendations:
+            system_prompt += "\n\n## 🤖 推荐工具\n根据您的问题，以下工具可能有用：\n" + tool_recommendations
+    except Exception as e:
+        logger.debug(f"Tool recommendation skipped: {e}")
 
     # ── 构建对话消息列表 ──
     llm_messages: list[dict] = [{"role": "system", "content": system_prompt}]

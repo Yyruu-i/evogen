@@ -866,6 +866,11 @@ async def _tool_loop_stream_generator(
                 # 收集扫描数据（用于报告）
                 if tool_name in ("port_scan", "vuln_scan"):
                     session_scan_data[tool_name] = _extract_tool_data(tool_name, tool_result)
+                    # 智能复测：记录并对比
+                    asyncio.ensure_future(_process_scan_retest(
+                        session_scan_data, session_id, tool_name,
+                        tool_args, tool_result, user_id=user_id,
+                    ))
 
                 # 将工具调用和结果追加到 messages
                 llm_messages.append({
@@ -958,8 +963,8 @@ def _recommend_tools(query: str) -> str:
                      "开放端口", "服务检测", "cve", "入侵", "攻击面", "靶场", "靶机"]
     if any(kw in query.lower() for kw in scan_keywords):
         recommendations.append(
-            "- 🔍 **端口扫描** (`port_scan`): 检测目标开放端口和服务版本\n"
-            "- 🛡️ **漏洞扫描** (`vuln_scan`): 使用 Nuclei 检测已知漏洞\n"
+            "- 🔍 **端口扫描** (`port_scan`): 检测目标开放端口和服务版本\\n"
+            "- 🛡️ **漏洞扫描** (`vuln_scan`): 使用 Nuclei 检测已知漏洞\\n"
             "- 📖 **漏洞知识库**: 自动检索相关 CVE 漏洞信息"
         )
 
@@ -967,7 +972,7 @@ def _recommend_tools(query: str) -> str:
     browser_keywords = ["打开", "网页", "网站", "浏览器", "截图", "url", "http", "页面"]
     if any(kw in query.lower() for kw in browser_keywords):
         recommendations.append(
-            "- 🌐 **浏览器导航** (`browser_navigate`): 打开指定网页\n"
+            "- 🌐 **浏览器导航** (`browser_navigate`): 打开指定网页\\n"
             "- 📸 **截图** (`browser_screenshot`): 截取当前页面"
         )
 
@@ -981,11 +986,183 @@ def _recommend_tools(query: str) -> str:
     # 如果没有任何匹配，给出通用推荐
     if not recommendations:
         recommendations.append(
-            "- 💬 **直接对话**: 我可以直接回答您的问题\n"
+            "- 💬 **直接对话**: 我可以直接回答您的问题\\n"
             "- 🔧 需要安全扫描或浏览器操作时，我会自动调用相应工具"
         )
 
     return "\n".join(recommendations)
+
+
+# ── 智能复测确认 ──
+
+SCAN_RECORDS_TABLE = "scan_records"
+
+
+def _ensure_scan_records_table():
+    """确保 scan_records 表存在."""
+    try:
+        from backend.db.connection import get_db
+        db = get_db()
+        db.execute(f"""
+            CREATE TABLE IF NOT EXISTS {SCAN_RECORDS_TABLE} (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                target TEXT NOT NULL,
+                tool_name TEXT NOT NULL,
+                tool_version TEXT DEFAULT '',
+                parameters TEXT DEFAULT '{{}}',
+                result_summary TEXT DEFAULT '',
+                open_ports_count INTEGER DEFAULT 0,
+                findings_count INTEGER DEFAULT 0,
+                created_at TEXT DEFAULT (datetime('now')),
+                user_id TEXT DEFAULT 'default'
+            )
+        """)
+        db.commit()
+    except Exception as e:
+        logger.warning(f"Failed to ensure scan_records table: {e}")
+
+
+def _get_tool_version(tool_name: str) -> str:
+    """获取工具版本信息."""
+    try:
+        if tool_name == "port_scan":
+            r = subprocess.run(["nmap", "--version"], capture_output=True, text=True, timeout=5)
+            for line in r.stdout.split("\n"):
+                if "Nmap version" in line:
+                    return line.strip()
+        elif tool_name == "vuln_scan":
+            r = subprocess.run(["nuclei", "-version"], capture_output=True, text=True, timeout=5)
+            return r.stdout.strip() or r.stderr.strip() or "unknown"
+    except Exception:
+        pass
+    return "unknown"
+
+
+def _record_scan_execution(session_id: str, tool_name: str, target: str, parameters: dict,
+                           result_summary: str, open_ports_count: int = 0,
+                           findings_count: int = 0, user_id: str = "default"):
+    """记录一次扫描执行到数据库，包括工具名称、版本、配置参数."""
+    _ensure_scan_records_table()
+    tool_version = _get_tool_version(tool_name)
+    try:
+        from backend.db.connection import get_db
+        db = get_db()
+        db.execute(f"""
+            INSERT INTO {SCAN_RECORDS_TABLE}
+                (session_id, target, tool_name, tool_version, parameters, result_summary,
+                 open_ports_count, findings_count, user_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            session_id, target, tool_name, tool_version,
+            json.dumps(parameters, ensure_ascii=False),
+            result_summary[:500],
+            open_ports_count, findings_count, user_id,
+        ))
+        db.commit()
+        logger.info(f"Scan record saved: {tool_name} on {target} (v{tool_version[:30]})")
+    except Exception as e:
+        logger.warning(f"Failed to save scan record: {e}")
+
+
+def _find_previous_scan(session_id: str, tool_name: str, target: str) -> dict | None:
+    """查找同一会话中同一工具对同一目标的最近一次扫描记录."""
+    try:
+        _ensure_scan_records_table()
+        from backend.db.connection import get_db
+        db = get_db()
+        row = db.execute(f"""
+            SELECT * FROM {SCAN_RECORDS_TABLE}
+            WHERE session_id = ? AND tool_name = ? AND target = ?
+            ORDER BY id DESC LIMIT 1 OFFSET 1
+        """, (session_id, tool_name, target)).fetchone()
+        if row:
+            return dict(row)
+    except Exception as e:
+        logger.warning(f"Failed to find previous scan: {e}")
+    return None
+
+
+def _compare_scan_results(current_data: dict, previous_record: dict) -> str:
+    """对比当前扫描结果与上一次扫描结果，标注变化."""
+    changes = []
+
+    # 版本变化
+    curr_version = current_data.get("version", "unknown")
+    prev_version = previous_record.get("tool_version", "unknown")
+    if curr_version != prev_version and prev_version != "unknown" and curr_version != "unknown":
+        changes.append(f"🔄 工具版本变化: {prev_version} → {curr_version}")
+
+    # 端口数量变化（port_scan）
+    curr_ports = current_data.get("total_ports", 0)
+    prev_ports = previous_record.get("open_ports_count", 0)
+    if curr_ports != prev_ports:
+        changes.append(f"🔓 开放端口数量变化: {prev_ports} → {curr_ports}")
+
+    # 漏洞数量变化（vuln_scan）
+    curr_findings = current_data.get("total_findings", 0)
+    prev_findings = previous_record.get("findings_count", 0)
+    if curr_findings != prev_findings:
+        diff = curr_findings - prev_findings
+        if diff > 0:
+            changes.append(f"🆕 新增 {diff} 个漏洞发现")
+        else:
+            changes.append(f"✅ 减少 {-diff} 个漏洞发现")
+
+    if not changes:
+        return "✅ 复测结果与首次一致，无明显变化。"
+
+    return "\n".join(changes)
+
+
+async def _process_scan_retest(session_scan_data: dict, session_id: str, tool_name: str,
+                                tool_args: dict, result_text: str, user_id: str):
+    """处理扫描结果：执行复测对比并记录本次扫描."""
+    try:
+        current_data = session_scan_data.get(tool_name, {})
+        target = tool_args.get("target", "unknown")
+
+        # 查找上次扫描记录
+        prev = _find_previous_scan(session_id, tool_name, target)
+
+        # 计算数量
+        open_ports_count = len(current_data.get("open_ports", []))
+        findings_count = current_data.get("total_findings", 0)
+
+        # 记录本次扫描
+        _record_scan_execution(
+            session_id, tool_name, target, tool_args,
+            result_text[:200], open_ports_count, findings_count,
+            user_id=user_id,
+        )
+
+        # 如果有上次记录，执行对比并输出
+        if prev:
+            comparison = _compare_scan_results(current_data, prev)
+            logger.info(f"Re-test comparison for {tool_name}@{target}: {comparison[:100]}")
+            # 保存到 system 消息
+            _save_message(session_id, "system",
+                f"📊 复测对比 ({tool_name} @ {target}):\n{comparison}")
+
+    except Exception as e:
+        logger.warning(f"Scan retest processing failed: {e}")
+
+
+def _get_scan_history(target: str, limit: int = 5, user_id: str = "default") -> list[dict]:
+    """查询某个目标的历史扫描记录."""
+    try:
+        _ensure_scan_records_table()
+        from backend.db.connection import get_db
+        db = get_db()
+        rows = db.execute(f"""
+            SELECT * FROM {SCAN_RECORDS_TABLE}
+            WHERE target = ? AND user_id = ?
+            ORDER BY id DESC LIMIT ?
+        """, (target, user_id, limit)).fetchall()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        logger.warning(f"Failed to get scan history: {e}")
+        return []
 
 
 def _extract_tool_data(tool_name: str, raw_result: str) -> dict:

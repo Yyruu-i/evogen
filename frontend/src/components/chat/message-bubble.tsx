@@ -34,7 +34,8 @@ function stripToolJson(content: string): string {
 /**
  * Parse content for 【思考过程】 / 【/思考过程】 and 【回答】 / 【/回答】 tags.
  * Only returns a ParsedThinking when BOTH tags are present. If either tag
- * is missing, returns null so the content renders as plain markdown.
+ * is missing, returns null so the content renders as plain markdown, but
+ * first strips any orphaned tag text that would otherwise show in the UI.
  * First strips tool JSON data, then parses tags.
  */
 function parseThinkingContent(content: string): ParsedThinking | null {
@@ -43,14 +44,30 @@ function parseThinkingContent(content: string): ParsedThinking | null {
   const thinkMatch = cleaned.match(/【思考过程】\s*([\s\S]*?)【\/思考过程】/);
   const answerMatch = cleaned.match(/【回答】\s*([\s\S]*?)【\/回答】/);
 
-  // All three models must output both tags together; if either is
-  // missing, render the content as-is without any card.
-  if (!thinkMatch || !answerMatch) return null;
+  // Both tags required for card rendering. If either is missing, strip
+  // orphaned tag text and return null (plain markdown).
+  if (!thinkMatch || !answerMatch) {
+    return null;
+  }
 
   return {
     thinking: thinkMatch[1].trim(),
     answer: answerMatch[1].trim(),
   };
+}
+
+/**
+ * Clean content for display when no parsed thinking structure is present.
+ * Strips any orphaned 【回答】 / 【/回答】 / 【思考过程】 / 【/思考过程】
+ * tags that aren't part of a complete pair, so they don't show in the UI.
+ */
+function cleanOrphanedTags(content: string): string {
+  // Remove 【回答】 and 【/回答】 tags (opening and closing, possibly with gaps)
+  return content
+    .replace(/【回答】\s*/g, '')
+    .replace(/\s*【\/回答】/g, '')
+    .replace(/【思考过程】\s*/g, '')
+    .replace(/\s*【\/思考过程】/g, '');
 }
 
 export function MessageBubble({ role, content, timestamp, isStreaming }: MessageBubbleProps) {
@@ -175,7 +192,7 @@ export function MessageBubble({ role, content, timestamp, isStreaming }: Message
                     remarkPlugins={[remarkGfm]}
                     rehypePlugins={[rehypeHighlight]}
                   >
-                    {parsed ? parsed.answer : content}
+                    {parsed ? parsed.answer : cleanOrphanedTags(content)}
                   </ReactMarkdown>
                 </div>
               )}

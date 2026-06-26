@@ -565,8 +565,7 @@ def _load_recent_messages(session_id: str, max_messages: int = 20) -> list[dict]
 def _run_mcp_tool(script_path: str, method: str, arguments: dict) -> str:
     """执行 MCP 子进程工具，返回格式化结果文本."""
     import subprocess
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    full_path = os.path.join(project_root, script_path)
+    full_path = os.path.join("/root/next-gen-agent/scripts", os.path.basename(script_path))
 
     if not os.path.exists(full_path):
         return f"❌ MCP 脚本不存在: {full_path}"
@@ -717,6 +716,22 @@ async def _execute_tool(tool_name: str, arguments: dict, session_id: str, user_i
 
         # ── 安全扫描工具（MCP 子进程调用）──
         elif tool_name == "port_scan":
+            # 复测：自动匹配上次使用的工具配置
+            target = arguments.get("target", "")
+            if target:
+                prev = _find_previous_scan(session_id, tool_name, target)
+                if prev:
+                    try:
+                        prev_params = json.loads(prev.get("parameters", "{}"))
+                        # 仅填充 LLM 未传入的关键参数（ports），确保结果可比
+                        if "ports" not in arguments or not arguments.get("ports"):
+                            if prev_params.get("ports"):
+                                arguments["ports"] = prev_params["ports"]
+                        if "arguments" not in arguments or not arguments.get("arguments"):
+                            if prev_params.get("arguments"):
+                                arguments["arguments"] = prev_params["arguments"]
+                    except Exception:
+                        pass
             result = _run_mcp_tool("scripts/mcp_nmap_server.py", "port_scan", arguments)
             if "❌" in result:
                 # 失败自动切换 fallback
@@ -726,6 +741,21 @@ async def _execute_tool(tool_name: str, arguments: dict, session_id: str, user_i
             return result
 
         elif tool_name == "vuln_scan":
+            # 复测：自动匹配上次使用的工具配置
+            target = arguments.get("target", "")
+            if target:
+                prev = _find_previous_scan(session_id, tool_name, target)
+                if prev:
+                    try:
+                        prev_params = json.loads(prev.get("parameters", "{}"))
+                        if "severity" not in arguments or not arguments.get("severity"):
+                            if prev_params.get("severity"):
+                                arguments["severity"] = prev_params["severity"]
+                        if "ports" not in arguments or not arguments.get("ports"):
+                            if prev_params.get("ports"):
+                                arguments["ports"] = prev_params["ports"]
+                    except Exception:
+                        pass
             result = _run_mcp_tool("scripts/mcp_nuclei_server.py", "vuln_scan", arguments)
             if "❌" in result:
                 fallback_args = dict(arguments)
@@ -1066,11 +1096,15 @@ def _record_scan_execution(session_id: str, tool_name: str, target: str, paramet
 
 
 def _find_previous_scan(session_id: str, tool_name: str, target: str) -> dict | None:
-    """查找同一会话中同一工具对同一目标的最近一次扫描记录."""
+    """查找同一目标同一工具最近一次扫描记录（跨会话）。
+
+    优先匹配同一会话（同轮复测），次优匹配跨会话（历史复测），确保配置可比性。
+    """
     try:
         _ensure_scan_records_table()
         from backend.db.connection import get_db
         db = get_db()
+        # 先尝试同一 session 内查找（同轮复测）
         row = db.execute(f"""
             SELECT * FROM {SCAN_RECORDS_TABLE}
             WHERE session_id = ? AND tool_name = ? AND target = ?
@@ -1078,12 +1112,20 @@ def _find_previous_scan(session_id: str, tool_name: str, target: str) -> dict | 
         """, (session_id, tool_name, target)).fetchone()
         if row:
             return dict(row)
+        # 再尝试跨 session 查找历史扫描（轮次间复测）
+        row = db.execute(f"""
+            SELECT * FROM {SCAN_RECORDS_TABLE}
+            WHERE tool_name = ? AND target = ?
+            ORDER BY id DESC LIMIT 1
+        """, (tool_name, target)).fetchone()
+        if row:
+            return dict(row)
     except Exception as e:
         logger.warning(f"Failed to find previous scan: {e}")
     return None
 
 
-def _compare_scan_results(current_data: dict, previous_record: dict) -> str:
+def _compare_scan_results(current_data: dict, previous_record: dict, current_args: dict | None = None) -> str:
     """对比当前扫描结果与上一次扫描结果，标注变化."""
     changes = []
 
@@ -1093,21 +1135,82 @@ def _compare_scan_results(current_data: dict, previous_record: dict) -> str:
     if curr_version != prev_version and prev_version != "unknown" and curr_version != "unknown":
         changes.append(f"🔄 工具版本变化: {prev_version} → {curr_version}")
 
-    # 端口数量变化（port_scan）
-    curr_ports = current_data.get("total_ports", 0)
-    prev_ports = previous_record.get("open_ports_count", 0)
-    if curr_ports != prev_ports:
-        changes.append(f"🔓 开放端口数量变化: {prev_ports} → {curr_ports}")
+    # 参数变化（基于原始传入参数）
+    try:
+        prev_params = json.loads(previous_record.get("parameters", "{}"))
+        curr_tool = current_data.get("tool", "")
+        if curr_tool in ("port_scan", "vuln_scan") and current_args:
+            key_params = ["ports", "severity", "arguments"]
+            param_diffs = []
+            for k in key_params:
+                pv = prev_params.get(k)
+                cv = current_args.get(k)
+                if pv and cv and str(pv) != str(cv):
+                    param_diffs.append(f"{k}: {pv} → {cv}")
+            if not param_diffs:
+                changes.append(f"⏸️ 配置参数与上次一致")
+            else:
+                changes.append(f"⚙️ 配置参数变化: {'; '.join(param_diffs)}")
+    except Exception:
+        pass
 
-    # 漏洞数量变化（vuln_scan）
-    curr_findings = current_data.get("total_findings", 0)
-    prev_findings = previous_record.get("findings_count", 0)
-    if curr_findings != prev_findings:
-        diff = curr_findings - prev_findings
-        if diff > 0:
-            changes.append(f"🆕 新增 {diff} 个漏洞发现")
-        else:
-            changes.append(f"✅ 减少 {-diff} 个漏洞发现")
+    # 端口级对比（port_scan）
+    curr_ports = current_data.get("open_ports", [])
+    curr_port_set = {(p["port"], p.get("protocol", "tcp")) for p in curr_ports}
+    try:
+        prev_ports_raw = previous_record.get("result_summary", "")
+        prev_port_tuples = set()
+        for m in re.finditer(r"(\d+)/(\w+)\s+(\S+)", prev_ports_raw):
+            prev_port_tuples.add((int(m.group(1)), m.group(2)))
+        if not prev_port_tuples:
+            prev_port_tuples = curr_port_set  # fallback: no previous data
+    except Exception:
+        prev_port_tuples = curr_port_set
+
+    if curr_port_set != prev_port_tuples:
+        new_ports = curr_port_set - prev_port_tuples
+        gone_ports = prev_port_tuples - curr_port_set
+        same_ports = curr_port_set & prev_port_tuples
+        parts = []
+        if new_ports:
+            parts.append(f"🆕 新增端口: {', '.join(f'{p[0]}/{p[1]}' for p in sorted(new_ports))}")
+        if gone_ports:
+            parts.append(f"❌ 消失端口: {', '.join(f'{p[0]}/{p[1]}' for p in sorted(gone_ports))}")
+        if same_ports:
+            parts.append(f"⏸️ 未变化: {len(same_ports)} 个端口")
+        changes.append(f"🔓 开放端口变化: {'; '.join(parts)}")
+    elif curr_ports:
+        changes.append(f"⏸️ 开放端口无变化 ({len(curr_ports)} 个)")
+
+    # 漏洞级对比（vuln_scan）
+    curr_findings = current_data.get("findings", [])
+    curr_finding_names = {f["name"] for f in curr_findings}
+    try:
+        prev_finding_names = set()
+        prev_findings_raw = previous_record.get("result_summary", "")
+        for m in re.finditer(r"\[(\w+)\]\s+(.+?)\s+[—––]", prev_findings_raw):
+            prev_finding_names.add(m.group(2).strip())
+    except Exception:
+        prev_finding_names = curr_finding_names
+
+    if curr_finding_names != prev_finding_names:
+        new_findings = curr_finding_names - prev_finding_names
+        resolved = prev_finding_names - curr_finding_names
+        unchanged = curr_finding_names & prev_finding_names
+        parts = []
+        if new_findings:
+            parts.append(f"🆕 新增 {len(new_findings)} 个: {', '.join(sorted(new_findings)[:5])}")
+            if len(new_findings) > 5:
+                parts[-1] += f"…等共 {len(new_findings)} 个"
+        if resolved:
+            parts.append(f"✅ 已修复 {len(resolved)} 个: {', '.join(sorted(resolved)[:5])}")
+            if len(resolved) > 5:
+                parts[-1] += f"…等共 {len(resolved)} 个"
+        if unchanged:
+            parts.append(f"⏸️ 仍存在 {len(unchanged)} 个")
+        changes.append(f"🛡️ 漏洞变化: {'; '.join(parts)}")
+    elif curr_findings:
+        changes.append(f"⏸️ 漏洞情况无变化 ({len(curr_findings)} 个)")
 
     if not changes:
         return "✅ 复测结果与首次一致，无明显变化。"
@@ -1138,7 +1241,7 @@ async def _process_scan_retest(session_scan_data: dict, session_id: str, tool_na
 
         # 如果有上次记录，执行对比并输出
         if prev:
-            comparison = _compare_scan_results(current_data, prev)
+            comparison = _compare_scan_results(current_data, prev, current_args=tool_args)
             logger.info(f"Re-test comparison for {tool_name}@{target}: {comparison[:100]}")
             # 保存到 system 消息
             _save_message(session_id, "system",
@@ -1168,6 +1271,8 @@ def _get_scan_history(target: str, limit: int = 5, user_id: str = "default") -> 
 def _extract_tool_data(tool_name: str, raw_result: str) -> dict:
     """从工具调用结果中提取关键字段."""
     data: dict = {"tool": tool_name}
+    # 记录工具版本
+    data["version"] = _get_tool_version(tool_name)
     if tool_name == "port_scan":
         data["open_ports"] = []
         data["total_ports"] = 0

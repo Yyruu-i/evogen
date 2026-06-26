@@ -227,7 +227,7 @@ async def _detect_complex_task(message: str) -> dict:
 
 
 async def _execute_subtask(subtask: dict, user_message: str, session_id: str, user_id: str) -> str:
-    """通过 Hermes CLI 调用子 Agent 执行子任务."""
+    """通过直接调用 LLM 执行子任务（后备方案，不依赖 hermes CLI）."""
     prompt = f"""你是一个专门负责子任务 "{subtask['name']}" 的 Agent。
 子任务描述：{subtask['description']}
 原始用户请求：{user_message}
@@ -235,25 +235,6 @@ async def _execute_subtask(subtask: dict, user_message: str, session_id: str, us
 请专注于完成分配给您的子任务，输出完整的结果。不要输出多余的元数据信息。"""
     
     try:
-        result = subprocess.run(
-            ["hermes", "chat", "--message", prompt, "--max-turns", "5", "--json"],
-            capture_output=True,
-            text=True,
-            timeout=120,
-            env={**os.environ},
-        )
-        if result.returncode == 0:
-            try:
-                output = json.loads(result.stdout)
-                content = output.get("response", result.stdout)
-            except json.JSONDecodeError:
-                content = result.stdout
-        else:
-            content = f"⚠️ 子任务执行异常: {result.stderr[:500]}"
-    except subprocess.TimeoutExpired:
-        content = f"⚠️ 子任务执行超时（120秒）"
-    except FileNotFoundError:
-        # 没有 hermes CLI，使用 LLM 直接回复作为子任务结果
         content = await _call_llm_for_subtask(prompt)
     except Exception as e:
         content = f"⚠️ 子任务执行失败: {str(e)[:200]}"

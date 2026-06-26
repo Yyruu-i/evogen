@@ -429,11 +429,32 @@ def _check_remote_version() -> dict:
     """检查远程仓库最新版本信息."""
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     try:
-        # 获取远程 tags
+        # 获取远程 tags — 注入 Windows/WSL 代理环境变量以兼容 TUN 模式
+        env = os.environ.copy()
+        for var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+            if var in env and env[var]:
+                break
+        else:
+            # 常见 Clash/V2ray 代理端口，仅用于 git，不影响其他请求
+            for port in (7897, 7890, 10809, 1080, 7891):
+                test_env = env.copy()
+                test_env["https_proxy"] = f"http://127.0.0.1:{port}"
+                test_env["http_proxy"] = f"http://127.0.0.1:{port}"
+                try:
+                    r = subprocess.run(
+                        ["git", "ls-remote", "--tags", "origin"],
+                        capture_output=True, text=True, timeout=5,
+                        cwd=project_root, env=test_env,
+                    )
+                    if r.returncode == 0 and r.stdout.strip():
+                        env = test_env
+                        break
+                except subprocess.TimeoutExpired:
+                    continue
         r = subprocess.run(
             ["git", "ls-remote", "--tags", "origin"],
             capture_output=True, text=True, timeout=10,
-            cwd=project_root,
+            cwd=project_root, env=env,
         )
         if r.returncode != 0:
             err_msg = r.stderr.strip()[:100] if r.stderr.strip() else "连接远程仓库超时（10s）"

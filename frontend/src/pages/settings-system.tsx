@@ -264,8 +264,8 @@ function UpdatePanel() {
     setResult(null);
     try {
       const res = await systemApi.checkUpdate();
-      if (res.ok && res.data) {
-        setResult(res.data);
+      if (res && (res as any).updated !== undefined) {
+        setResult(res as any);
       } else {
         setError((res as any).error || '检查更新失败，请确认网络连接后重试');
       }

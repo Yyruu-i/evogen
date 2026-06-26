@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Plus, ChevronDown, ChevronRight, Brain } from 'lucide-react';
+import { Plus } from 'lucide-react';
 import { useSessionMessages } from '@/hooks/use-sessions';
 import { EvoGenWS } from '@/lib/ws';
 import { cn, generateId } from '@/lib/utils';
@@ -23,10 +23,6 @@ export function ChatPage() {
   const pendingSessionRef = useRef<string | null>(null);
   const streamingRef = useRef(false);
   const [streamingUi, setStreamingUi] = useState(false);
-  const [thinkingExpanded, setThinkingExpanded] = useState(false);
-  const [reasoningText, setReasoningText] = useState('');
-  const [reasoningSupported, setReasoningSupported] = useState(true);
-  const thinkingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const qc = useQueryClient();
   const { state: chat, setMessages, setStreaming, setActiveSession, updateLastAssistant, finalizeLastAssistant, clearMessages } = useChatContext();
 
@@ -84,11 +80,6 @@ export function ChatPage() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chat.messages]);
 
-  // Cleanup thinking timer on unmount
-  useEffect(() => {
-    return () => { if (thinkingTimerRef.current) clearTimeout(thinkingTimerRef.current); };
-  }, []);
-
   const handleSend = useCallback(() => {
     const text = input.trim();
     if (!text || streamingRef.current) return;
@@ -98,19 +89,13 @@ export function ChatPage() {
     setInput('');
     streamingRef.current = true;
     setStreamingUi(true);
-    setThinkingExpanded(true);
-    setReasoningText('');
-    if (thinkingTimerRef.current) clearTimeout(thinkingTimerRef.current);
 
     // Fire-and-forget async SSE — state updates via stable refs
     const effectiveSession = activeId || chat.activeSessionId;
     sendMessageAndStream(text, effectiveSession).finally(() => {
       streamingRef.current = false;
-      // Keep streaming UI visible for minimum 800ms so thinking bar renders
       setTimeout(() => {
         setStreamingUi(false);
-        // Auto-collapse thinking after 3s (longer so user can read reasoning)
-        thinkingTimerRef.current = setTimeout(() => setThinkingExpanded(false), 3000);
       }, 800);
       qc.invalidateQueries({ queryKey: ['sessions'] });
       if (activeId) {
@@ -126,8 +111,6 @@ export function ChatPage() {
   finalizeLastAssistantRef.current = finalizeLastAssistant;
   const setSearchParamsRef = useRef(setSearchParams);
   setSearchParamsRef.current = setSearchParams;
-  const setReasoningTextRef = useRef(setReasoningText);
-  setReasoningTextRef.current = setReasoningText;
 
   const sendMessageAndStream = useCallback(async (text: string, activeId: string) => {
     const B = window.location.origin;
@@ -162,17 +145,7 @@ export function ChatPage() {
             if (parsed.session && !activeId) {
               pendingSessionRef.current = parsed.session;
             }
-            // ── 思考模式：接收 reasoning 事件 ──
-            if (parsed.status === 'reasoning' && parsed.reasoning) {
-              setReasoningTextRef.current(parsed.reasoning);
-              setThinkingExpanded(true);
-              continue;
-            }
-            // ── 接收 reasoning 能力标志 ──
-            if (parsed.status === 'reasoning_capability' && parsed.supported === false) {
-              setReasoningSupported(false);
-              continue;
-            }
+            // ── 处理普通 chunk ──
             if (parsed.chunk) {
               updateLastAssistantRef.current(parsed.chunk, 'sse-');
             }
@@ -256,54 +229,6 @@ export function ChatPage() {
 
       {/* ── Content ────────────────────────────────────────────── */}
       <main className="flex flex-col flex-1">
-        {/* ── Thinking bar (above all content) ──────────────── */}
-        {(reasoningSupported && (streamingUi || thinkingExpanded || reasoningText)) && (
-          <div className="px-4 md:px-6 pt-3">
-            <div className="max-w-3xl mx-auto">
-              <button
-                onClick={() => setThinkingExpanded(!thinkingExpanded)}
-                className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-all w-full group"
-                style={{
-                  background: 'rgba(184,192,255,0.06)',
-                  border: '1px solid rgba(184,192,255,0.12)',
-                  color: 'var(--color-text-secondary)',
-                }}
-              >
-                {thinkingExpanded ? (
-                  <ChevronDown className="w-3.5 h-3.5 flex-shrink-0" style={{ color: 'var(--color-text-muted)' }} />
-                ) : (
-                  <ChevronRight className="w-3.5 h-3.5 flex-shrink-0" style={{ color: 'var(--color-text-muted)' }} />
-                )}
-                <Brain className="w-3.5 h-3.5 flex-shrink-0" style={{ color: 'var(--color-holo)' }} />
-                <span className="flex-1 text-left">
-                  {streamingUi && !reasoningText ? '思考中…' : '思考过程'}
-                </span>
-                {streamingUi && (
-                  <span className="flex items-center gap-1">
-                    <span className="w-1 h-1 rounded-full animate-loading-dot-1" style={{ background: 'var(--color-holo)' }} />
-                    <span className="w-1 h-1 rounded-full animate-loading-dot-2" style={{ background: 'var(--color-holo)' }} />
-                    <span className="w-1 h-1 rounded-full animate-loading-dot-3" style={{ background: 'var(--color-holo)' }} />
-                  </span>
-                )}
-              </button>
-              {thinkingExpanded && (
-                <div
-                  className="mt-1.5 px-3 py-2 rounded-lg text-[12px] leading-relaxed max-h-64 overflow-y-auto"
-                  style={{
-                    background: 'rgba(184,192,255,0.03)',
-                    border: '1px solid rgba(184,192,255,0.08)',
-                    color: 'var(--color-text-muted)',
-                    fontFamily: 'var(--font-mono)',
-                    whiteSpace: 'pre-wrap',
-                  }}
-                >
-                  {reasoningText || (streamingUi ? '正在分析…' : '无推理过程')}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
         {/* ── Empty state or messages ────────────────────────── */}
         {!activeId && chat.messages.length === 0 ? (
           <WelcomeEmpty onSuggestionClick={(text) => setInput(text)} />

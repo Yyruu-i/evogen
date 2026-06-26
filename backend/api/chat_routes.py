@@ -406,6 +406,17 @@ async def _build_system_prompt(session_id: str, user_message: str, user_id: str)
     except Exception as e:
         logger.warning(f"Failed to inject memory snapshot: {e}")
 
+    # ── 思考过程输出规范指令 ──
+    parts.append(
+        "\n## 思考过程输出规范\n"
+        "如果你有推理/思考过程需要展示，请严格按照以下格式组织你的回复：\n"
+        "【思考过程】\n"
+        "（你的推理过程写在这里，可以包含多行）\n"
+        "【回答】\n"
+        "（你的最终回答写在这里）\n\n"
+        "如果不需要展示思考过程，直接回复即可，无需包含这两个标签。\n"
+    )
+
     return "\n".join(parts)
 
 
@@ -848,7 +859,6 @@ async def _tool_loop_stream_generator(
     # ── 检测当前模型是否支持 reasoning（思考模式）──
     current_model = _get_current_model().lower()
     supports_reasoning = any(kw in current_model for kw in ["reasoner", "r1", "deepseek-reasoner"])
-    yield f"data: {json.dumps({'status': 'reasoning_capability', 'supported': supports_reasoning})}\n\n"
 
     while iteration < max_rounds:
         iteration += 1
@@ -915,12 +925,6 @@ async def _tool_loop_stream_generator(
         text = result.get("content") or ""
         full_text_response = text
         reasoning = result.get("reasoning") or ""
-
-        # 如果有 reasoning_content，先发送推理过程（思考模式）
-        if reasoning:
-            yield f"data: {json.dumps({'status': 'reasoning', 'reasoning': reasoning})}\\n\\n"
-            # 短暂延迟，确保前端有时间渲染思考区域
-            await asyncio.sleep(0.05)
 
         if text:
             # 流式输出文本（逐字输出模拟流式体验）

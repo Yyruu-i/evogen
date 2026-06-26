@@ -546,7 +546,8 @@ def _load_recent_messages(session_id: str, max_messages: int = 20) -> list[dict]
 def _run_mcp_tool(script_path: str, method: str, arguments: dict) -> str:
     """执行 MCP 子进程工具，返回格式化结果文本."""
     import subprocess
-    full_path = os.path.join("/root/next-gen-agent/scripts", os.path.basename(script_path))
+    script_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "..", "scripts")
+    full_path = os.path.join(script_dir, os.path.basename(script_path))
 
     if not os.path.exists(full_path):
         return f"❌ MCP 脚本不存在: {full_path}"

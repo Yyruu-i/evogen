@@ -263,102 +263,6 @@ async def create_skill(skill_data: dict, user_id: str = Depends(get_current_user
     return {"ok": True, "data": {"id": dir_name, "name": name}}
 
 
-@router.get("/{skill_id}")
-async def get_skill(skill_id: str, user_id: str = Depends(get_current_user)):
-    """获取单个技能完整内容（含 Markdown 正文）."""
-    user_skills_dir = Path(os.path.expanduser(f"~/.hermes/skills/{user_id}"))
-    md_path = None
-    # 先查用户目录
-    if user_skills_dir.is_dir():
-        for candidate in user_skills_dir.rglob(f"{skill_id}/SKILL.md"):
-            md_path = candidate
-            break
-    # 再查全局目录
-    if not md_path:
-        for skills_dir in _SKILLS_DIRS:
-            for candidate in skills_dir.rglob(f"{skill_id}/SKILL.md"):
-                md_path = candidate
-                break
-            if md_path:
-                break
-    if not md_path:
-        raise HTTPException(status_code=404, detail={"ok": False, "error": "技能不存在"})
-    content = md_path.read_text(encoding="utf-8")
-    fm = _parse_skill_frontmatter(md_path) or {}
-    body = ""
-    parts = content.split("---", 2)
-    if len(parts) >= 3:
-        body = parts[2].lstrip("\n")
-    return {"ok": True, "data": {"content": body, "frontmatter": fm}}
-
-
-@router.put("/{skill_id}")
-async def update_skill(skill_id: str, skill_data: dict, user_id: str = Depends(get_current_user)):
-    """更新技能 SKILL.md（仅允许编辑用户自己的技能）."""
-    # 先检查是否为用户自定义技能（per-user 目录）
-    user_skills_dir = Path(os.path.expanduser(f"~/.hermes/skills/{user_id}"))
-    md_path = None
-    if user_skills_dir.is_dir():
-        for candidate in user_skills_dir.rglob(f"{skill_id}/SKILL.md"):
-            md_path = candidate
-            break
-
-    if not md_path:
-        raise HTTPException(status_code=403, detail={"ok": False, "error": "技能不存在或为内置技能，不可编辑"})
-
-    # 二次校验：读取 frontmatter scope，内置技能（scope≠user）禁止编辑
-    fm_check = _parse_skill_frontmatter(md_path) or {}
-    if fm_check.get("scope") != "user":
-        raise HTTPException(status_code=403, detail={"ok": False, "error": "内置技能不可编辑，仅用户自定义技能（scope=user）可编辑"})
-
-    name = skill_data.get("name", "").strip()
-    description = skill_data.get("description", "").strip()
-    markdown_body = skill_data.get("markdown", "").strip()
-    category = skill_data.get("category", "").strip()
-
-    # Parse existing to preserve other frontmatter and body
-    existing = _parse_skill_frontmatter(md_path) or {}
-
-    # Extract existing body (everything after frontmatter)
-    existing_body = ""
-    try:
-        raw = md_path.read_text(encoding="utf-8")
-        parts = raw.split("---", 2)
-        if len(parts) >= 3:
-            existing_body = parts[2].lstrip("\n")
-    except Exception:
-        pass
-
-    yaml_front = (
-        f"---\n"
-        f"name: {name or existing.get('name', '')}\n"
-        f"description: {description or existing.get('description', '')}\n"
-        f"category: {category or existing.get('category', '')}\n"
-        f"scope: user\n"
-        f"user_id: {user_id}\n"
-        f"version: 1.0.0\n"
-        f"---\n\n"
-    )
-    content = yaml_front + (markdown_body or existing_body or f"# {name}\n\n{description}\n")
-    md_path.write_text(content, encoding="utf-8")
-
-    return {"ok": True, "data": {"id": skill_id, "name": name}}
-
-
-@router.delete("/{skill_id}")
-async def delete_skill(skill_id: str, user_id: str = Depends(get_current_user)):
-    """删除技能（仅允许删除用户自己的技能）."""
-    import shutil
-    # 只允许删除 per-user 目录下的技能
-    user_skills_dir = Path(os.path.expanduser(f"~/.hermes/skills/{user_id}"))
-    if user_skills_dir.is_dir():
-        for candidate in user_skills_dir.rglob(skill_id):
-            if candidate.is_dir() and (candidate / "SKILL.md").exists():
-                shutil.rmtree(candidate)
-                return {"ok": True}
-    return {"ok": False, "error": "技能不存在或为内置技能，不可删除"}
-
-
 @router.post("/batch/delete")
 async def batch_delete_skills(payload: dict, user_id: str = Depends(get_current_user)):
     """批量删除技能 — 仅允许删除用户自定义技能，内置技能（scope=builtin）禁止删除."""
@@ -632,3 +536,99 @@ async def add_market_skill_review(
     _save_market_reviews()
 
     return {"ok": True, "data": review}
+
+
+@router.get("/{skill_id}")
+async def get_skill(skill_id: str, user_id: str = Depends(get_current_user)):
+    """获取单个技能完整内容（含 Markdown 正文）."""
+    user_skills_dir = Path(os.path.expanduser(f"~/.hermes/skills/{user_id}"))
+    md_path = None
+    # 先查用户目录
+    if user_skills_dir.is_dir():
+        for candidate in user_skills_dir.rglob(f"{skill_id}/SKILL.md"):
+            md_path = candidate
+            break
+    # 再查全局目录
+    if not md_path:
+        for skills_dir in _SKILLS_DIRS:
+            for candidate in skills_dir.rglob(f"{skill_id}/SKILL.md"):
+                md_path = candidate
+                break
+            if md_path:
+                break
+    if not md_path:
+        raise HTTPException(status_code=404, detail={"ok": False, "error": "技能不存在"})
+    content = md_path.read_text(encoding="utf-8")
+    fm = _parse_skill_frontmatter(md_path) or {}
+    body = ""
+    parts = content.split("---", 2)
+    if len(parts) >= 3:
+        body = parts[2].lstrip("\n")
+    return {"ok": True, "data": {"content": body, "frontmatter": fm}}
+
+
+@router.put("/{skill_id}")
+async def update_skill(skill_id: str, skill_data: dict, user_id: str = Depends(get_current_user)):
+    """更新技能 SKILL.md（仅允许编辑用户自己的技能）."""
+    # 先检查是否为用户自定义技能（per-user 目录）
+    user_skills_dir = Path(os.path.expanduser(f"~/.hermes/skills/{user_id}"))
+    md_path = None
+    if user_skills_dir.is_dir():
+        for candidate in user_skills_dir.rglob(f"{skill_id}/SKILL.md"):
+            md_path = candidate
+            break
+
+    if not md_path:
+        raise HTTPException(status_code=403, detail={"ok": False, "error": "技能不存在或为内置技能，不可编辑"})
+
+    # 二次校验：读取 frontmatter scope，内置技能（scope≠user）禁止编辑
+    fm_check = _parse_skill_frontmatter(md_path) or {}
+    if fm_check.get("scope") != "user":
+        raise HTTPException(status_code=403, detail={"ok": False, "error": "内置技能不可编辑，仅用户自定义技能（scope=user）可编辑"})
+
+    name = skill_data.get("name", "").strip()
+    description = skill_data.get("description", "").strip()
+    markdown_body = skill_data.get("markdown", "").strip()
+    category = skill_data.get("category", "").strip()
+
+    # Parse existing to preserve other frontmatter and body
+    existing = _parse_skill_frontmatter(md_path) or {}
+
+    # Extract existing body (everything after frontmatter)
+    existing_body = ""
+    try:
+        raw = md_path.read_text(encoding="utf-8")
+        parts = raw.split("---", 2)
+        if len(parts) >= 3:
+            existing_body = parts[2].lstrip("\n")
+    except Exception:
+        pass
+
+    yaml_front = (
+        f"---\n"
+        f"name: {name or existing.get('name', '')}\n"
+        f"description: {description or existing.get('description', '')}\n"
+        f"category: {category or existing.get('category', '')}\n"
+        f"scope: user\n"
+        f"user_id: {user_id}\n"
+        f"version: 1.0.0\n"
+        f"---\n\n"
+    )
+    content = yaml_front + (markdown_body or existing_body or f"# {name}\n\n{description}\n")
+    md_path.write_text(content, encoding="utf-8")
+
+    return {"ok": True, "data": {"id": skill_id, "name": name}}
+
+
+@router.delete("/{skill_id}")
+async def delete_skill(skill_id: str, user_id: str = Depends(get_current_user)):
+    """删除技能（仅允许删除用户自己的技能）."""
+    import shutil
+    # 只允许删除 per-user 目录下的技能
+    user_skills_dir = Path(os.path.expanduser(f"~/.hermes/skills/{user_id}"))
+    if user_skills_dir.is_dir():
+        for candidate in user_skills_dir.rglob(skill_id):
+            if candidate.is_dir() and (candidate / "SKILL.md").exists():
+                shutil.rmtree(candidate)
+                return {"ok": True}
+    return {"ok": False, "error": "技能不存在或为内置技能，不可删除"}

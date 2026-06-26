@@ -12,17 +12,34 @@ interface MessageBubbleProps {
   isStreaming?: boolean;
 }
 
+interface ParsedThinking {
+  thinking: string;
+  answer: string;
+}
+
 /**
- * Parse content for 【思考过程】 / 【回答】 tags.
+ * Parse content for 【思考过程】 / 【/思考过程】 and 【回答】 / 【/回答】 tags.
+ * Uses full closing tags so the model can explicitly mark boundaries.
  * Returns { thinking, answer } or null if no tags found.
  */
-function parseThinkingContent(content: string): { thinking: string; answer: string } | null {
-  const thinkMatch = content.match(/【思考过程】\s*([\s\S]*?)【回答】\s*([\s\S]*)/);
-  if (!thinkMatch) return null;
-  return {
-    thinking: thinkMatch[1].trim(),
-    answer: thinkMatch[2].trim(),
-  };
+function parseThinkingContent(content: string): ParsedThinking | null {
+  const thinkRegex = /【思考过程】\s*([\s\S]*?)【\/思考过程】/;
+  const answerRegex = /【回答】\s*([\s\S]*?)【\/回答】/;
+
+  const thinkMatch = content.match(thinkRegex);
+  const answerMatch = content.match(answerRegex);
+
+  if (thinkMatch || answerMatch) {
+    return {
+      thinking: thinkMatch ? thinkMatch[1].trim() : '',
+      answer: answerMatch ? answerMatch[1].trim() : content
+        // If only answer tags but no thinking tags, strip answer tags from the answer text
+        .replace(/【回答】\s*/, '')
+        .replace(/\s*【\/回答】/, ''),
+    };
+  }
+
+  return null;
 }
 
 export function MessageBubble({ role, content, timestamp, isStreaming }: MessageBubbleProps) {
@@ -39,11 +56,6 @@ export function MessageBubble({ role, content, timestamp, isStreaming }: Message
       <div
         className={cn(
           'w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0',
-          isUser
-            ? ''
-            : isTool
-              ? ''
-              : '',
         )}
         style={
           isUser
@@ -133,34 +145,18 @@ export function MessageBubble({ role, content, timestamp, isStreaming }: Message
                       color: 'var(--chat-bubble-user-text)',
                       boxShadow: 'var(--chat-bubble-shadow)',
                     }
-                  : parsed
-                    ? {
-                        background: 'var(--chat-bubble-assistant)',
-                        border: '1px solid var(--chat-bubble-assistant-border)',
-                        color: 'var(--chat-bubble-assistant-text)',
-                        boxShadow: 'var(--chat-bubble-shadow)',
-                      }
-                    : {
-                        background: 'var(--chat-bubble-assistant)',
-                        border: '1px solid var(--chat-bubble-assistant-border)',
-                        color: 'var(--chat-bubble-assistant-text)',
-                        boxShadow: 'var(--chat-bubble-shadow)',
-                      }
+                  : {
+                      background: 'var(--chat-bubble-assistant)',
+                      border: '1px solid var(--chat-bubble-assistant-border)',
+                      color: 'var(--chat-bubble-assistant-text)',
+                      boxShadow: 'var(--chat-bubble-shadow)',
+                    }
               }
             >
-              {/* Markdown rendering */}
-              {(isUser || isTool) ? (
+              {/* Content rendering: user/tool plain text; assistant with markdown */}
+              {isUser || isTool ? (
                 <div className="whitespace-pre-wrap break-words">
                   {parsed ? parsed.answer : content}
-                </div>
-              ) : parsed ? (
-                <div className="prose prose-sm max-w-none [&_pre]:!my-2 [&_pre]:!rounded-lg [&_code]:!text-xs [&_p]:!my-1 [&_ul]:!my-1 [&_ol]:!my-1 [&_table]:!text-xs">
-                  <ReactMarkdown
-                    remarkPlugins={[remarkGfm]}
-                    rehypePlugins={[rehypeHighlight]}
-                  >
-                    {parsed.answer}
-                  </ReactMarkdown>
                 </div>
               ) : (
                 <div className="prose prose-sm max-w-none [&_pre]:!my-2 [&_pre]:!rounded-lg [&_code]:!text-xs [&_p]:!my-1 [&_ul]:!my-1 [&_ol]:!my-1 [&_table]:!text-xs">
@@ -168,7 +164,7 @@ export function MessageBubble({ role, content, timestamp, isStreaming }: Message
                     remarkPlugins={[remarkGfm]}
                     rehypePlugins={[rehypeHighlight]}
                   >
-                    {content}
+                    {parsed ? parsed.answer : content}
                   </ReactMarkdown>
                 </div>
               )}

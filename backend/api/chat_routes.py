@@ -406,15 +406,20 @@ async def _build_system_prompt(session_id: str, user_message: str, user_id: str)
     except Exception as e:
         logger.warning(f"Failed to inject memory snapshot: {e}")
 
-    # ── 思考过程输出规范指令 ──
+    # ── 思考过程输出规范（强约束）──
     parts.append(
         "\n## 思考过程输出规范\n"
-        "如果你有推理/思考过程需要展示，请严格按照以下格式组织你的回复：\n"
+        "你必须严格按照以下格式组织你的回复：\n"
+        "如果问题需要分析或思考，请先将你的思考过程放在【思考过程】和【/思考过程】标签之间，\n"
+        "然后将最终回答放在【回答】和【/回答】标签之间。\n"
+        "例如：\n"
         "【思考过程】\n"
-        "（你的推理过程写在这里，可以包含多行）\n"
+        "用户想知道今天天气如何...\n"
+        "【/思考过程】\n"
         "【回答】\n"
-        "（你的最终回答写在这里）\n\n"
-        "如果不需要展示思考过程，直接回复即可，无需包含这两个标签。\n"
+        "今天天气晴朗，适合出门。\n"
+        "【/回答】\n"
+        "如果问题不需要思考，直接回复即可，无需使用标签。\n"
     )
 
     return "\n".join(parts)
@@ -856,10 +861,6 @@ async def _tool_loop_stream_generator(
     except Exception:
         pass
 
-    # ── 检测当前模型是否支持 reasoning（思考模式）──
-    current_model = _get_current_model().lower()
-    supports_reasoning = any(kw in current_model for kw in ["reasoner", "r1", "deepseek-reasoner"])
-
     while iteration < max_rounds:
         iteration += 1
 
@@ -924,7 +925,6 @@ async def _tool_loop_stream_generator(
         # ── 情况 2：纯文本响应 → 流式输出 ──
         text = result.get("content") or ""
         full_text_response = text
-        reasoning = result.get("reasoning") or ""
 
         if text:
             # 流式输出文本（逐字输出模拟流式体验）

@@ -154,10 +154,11 @@ export function SettingsSystemPage() {
           </div>
         )}
 
+        {/* ── 智能更新面板 ── */}
+        <UpdatePanel />
+
         {/* System logs */}
         <SystemLogs />
-
-        {/* ── Agent 配置区域 ── */}
         <AgentConfigPanel />
       </div>
     </div>
@@ -245,6 +246,91 @@ function AgentConfigPanel() {
               设置为较小值（如 3）可测试轮次上限自动终止功能。
             </p>
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── 智能更新面板 ──
+function UpdatePanel() {
+  const [checking, setChecking] = useState(false);
+  const [result, setResult] = useState<{ updated: boolean; message: string; before: string; after: string; changelog: string[] } | null>(null);
+  const [error, setError] = useState('');
+
+  const handleCheck = async () => {
+    setChecking(true);
+    setError('');
+    setResult(null);
+    try {
+      const res = await systemApi.checkUpdate();
+      if (res.ok && res.data) {
+        setResult(res.data);
+      } else {
+        setError((res as any).error || '检查更新失败');
+      }
+    } catch (err) {
+      setError(err?.message || '请求失败');
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  return (
+    <div className="glass-card p-5">
+      <div className="flex items-center gap-3 mb-4">
+        <div className="w-10 h-10 rounded-xl bg-accent/10 flex items-center justify-center">
+          <Settings2 className="w-5 h-5" style={{ color: 'var(--color-accent)' }} />
+        </div>
+        <div>
+          <p className="text-[14px] font-semibold">智能更新</p>
+          <p className="text-[11px] text-muted">检查工具版本并执行更新</p>
+        </div>
+      </div>
+
+      <button
+        onClick={handleCheck}
+        disabled={checking}
+        className="px-4 py-1.5 text-[12px] font-medium rounded-lg transition-all mb-3"
+        style={{
+          background: checking ? 'rgba(255,255,255,0.1)' : 'linear-gradient(135deg, var(--color-accent), var(--color-coral))',
+          color: checking ? 'var(--color-muted)' : '#fff',
+        }}
+      >
+        {checking ? '检查中…' : '检查更新'}
+      </button>
+
+      {error && (
+        <p className="text-[12px] text-danger mb-2">{error}</p>
+      )}
+
+      {result && (
+        <div className="bg-tertiary/50 rounded-lg p-3 text-[12px] space-y-2">
+          <div className="flex items-center gap-2">
+            {result.updated ? (
+              <span className="text-success">✅ 更新成功</span>
+            ) : (
+              <span className="text-info">ℹ️</span>
+            )}
+            <span className="text-secondary">{result.message}</span>
+          </div>
+          {result.updated && (
+            <div className="text-[11px]">
+              <p className="text-muted mb-1">
+                版本变化: <span className="text-warning">{result.before}</span> → <span className="text-success">{result.after}</span>
+              </p>
+              {result.changelog.length > 0 && (
+                <details>
+                  <summary className="cursor-pointer text-muted hover:text-secondary">查看更新日志 ({result.changelog.length} 条)</summary>
+                  <ul className="mt-1 space-y-0.5 max-h-32 overflow-y-auto">
+                    {result.changelog.map((log, i) => (
+                      <li key={i} className="text-muted truncate">{log}</li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>

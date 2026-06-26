@@ -407,6 +407,129 @@ async def rollback_tools(version: str):
         return {"ok": False, "error": f"回滚失败: {e}"}
 
 
+# ── 智能版本更新 ──
+
+
+def _get_git_version() -> str:
+    """获取当前 Git 版本的 tag 或 commit hash."""
+    try:
+        r = subprocess.run(
+            ["git", "describe", "--tags", "--always"],
+            capture_output=True, text=True, timeout=5,
+            cwd=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        )
+        if r.returncode == 0:
+            return r.stdout.strip()
+    except Exception:
+        pass
+    return "unknown"
+
+
+def _check_remote_version() -> dict:
+    """检查远程仓库最新版本信息."""
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    try:
+        # 获取远程 tags
+        r = subprocess.run(
+            ["git", "ls-remote", "--tags", "origin"],
+            capture_output=True, text=True, timeout=10,
+            cwd=project_root,
+        )
+        if r.returncode != 0:
+            return {"available": False, "error": "无法连接远程仓库"}
+        # 解析最新 tag
+        tags = []
+        for line in r.stdout.strip().split("\n"):
+            if line:
+                parts = line.split("/")
+                tag = parts[-1] if parts else ""
+                if tag:
+                    tags.append(tag)
+        tags.sort(key=lambda t: (
+            [int(x) for x in t.replace("v", "").split(".") if x.isdigit()]
+            if t.replace("v", "").split(".") and all(x.isdigit() for x in t.replace("v", "").split("."))
+            else [0]
+        ), reverse=True)
+        latest_tag = tags[-1] if tags else ""
+        current = _get_git_version()
+        return {
+            "available": bool(latest_tag) and latest_tag != current,
+            "current_version": current,
+            "latest_version": latest_tag,
+            "error": None,
+        }
+    except Exception as e:
+        return {"available": False, "error": str(e)}
+
+
+@router.post("/update")
+async def trigger_update():
+    """检查工具版本并执行更新（git pull + 刷新工具列表）.
+
+    返回更新前后的版本号对比和变更日志。
+    """
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    before = _get_git_version()
+
+    # 检查远程是否有更新
+    remote_info = _check_remote_version()
+    if remote_info.get("error"):
+        return {"ok": False, "error": remote_info["error"]}
+    if not remote_info.get("available"):
+        return {
+            "ok": True,
+            "data": {
+                "updated": False,
+                "message": "当前已是最新版本",
+                "before": before,
+                "after": before,
+                "changelog": [],
+            },
+        }
+
+    try:
+        # 执行 git pull
+        r = subprocess.run(
+            ["git", "pull", "origin", "master"],
+            capture_output=True, text=True, timeout=30,
+            cwd=project_root,
+        )
+        if r.returncode != 0:
+            return {"ok": False, "error": f"更新失败: {r.stderr[:300]}"}
+
+        after = _get_git_version()
+
+        # 获取更新日志（最近的 commit 记录）
+        log_r = subprocess.run(
+            ["git", "log", f"{before}..{after}", "--oneline", "--no-decorate"],
+            capture_output=True, text=True, timeout=5,
+            cwd=project_root,
+        )
+        changelog = []
+        if log_r.returncode == 0 and log_r.stdout.strip():
+            changelog = [line.strip() for line in log_r.stdout.strip().split("\n") if line.strip()]
+
+        # 刷新工具列表（重新加载 hermes tools）
+        # 清理静态变量缓存，下次调用会重新获取
+        _TOOLS_REPO.pop("_tools_cache", None)
+
+        return {
+            "ok": True,
+            "data": {
+                "updated": True,
+                "message": f"更新成功: {before} → {after}",
+                "before": before,
+                "after": after,
+                "changelog": changelog,
+                "git_output": r.stdout[:1000],
+            },
+        }
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "更新超时（30秒），请稍后重试"}
+    except Exception as e:
+        return {"ok": False, "error": f"更新异常: {e}"}
+
+
 def _version_compare(v1: str, v2: str) -> int:
     """比较两个语义版本号。v1 > v2 返回正数，v1 < v2 返回负数."""
     try:

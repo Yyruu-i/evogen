@@ -385,4 +385,11 @@ export const systemApi = {
   capacity() {
     return request<import('@/types').MemoryCapacityResponse>('/memory/capacity');
   },
+
+  // ── 智能更新 ──
+  checkUpdate() {
+    return request<{ ok: boolean; data: { updated: boolean; message: string; before: string; after: string; changelog: string[] }; error?: string }>('/tools/update', {
+      method: 'POST',
+    });
+  },
 };

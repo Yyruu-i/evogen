@@ -18,21 +18,39 @@ interface ParsedThinking {
 }
 
 /**
+ * Strip JSON tool-call data from content before parsing thinking/answer tags.
+ * Matches: {"status":"tool_...", ...} or {"status":"browser_...", ...}
+ * These are produced by the LLM and injected between tags; they should
+ * never be visible to the user.
+ */
+function stripToolJson(content: string): string {
+  // Remove top-level JSON objects that start with {"status":
+  // Uses a non-greedy match across lines to the first closing brace.
+  // Tool JSON from the LLM is always flat (no nested braces), so
+  // matching to the first } is safe.
+  return content.replace(/\{\s*"status"\s*:\s*"[^"]*".*?\}/gs, '');
+}
+
+/**
  * Parse content for 【思考过程】 / 【/思考过程】 and 【回答】 / 【/回答】 tags.
+ * First strips tool JSON data, then parses tags.
  * Uses full closing tags so the model can explicitly mark boundaries.
  * Returns { thinking, answer } or null if no tags found.
  */
 function parseThinkingContent(content: string): ParsedThinking | null {
+  // Strip tool JSON before parsing tags
+  const cleaned = stripToolJson(content);
+
   const thinkRegex = /【思考过程】\s*([\s\S]*?)【\/思考过程】/;
   const answerRegex = /【回答】\s*([\s\S]*?)【\/回答】/;
 
-  const thinkMatch = content.match(thinkRegex);
-  const answerMatch = content.match(answerRegex);
+  const thinkMatch = cleaned.match(thinkRegex);
+  const answerMatch = cleaned.match(answerRegex);
 
   if (thinkMatch || answerMatch) {
     return {
       thinking: thinkMatch ? thinkMatch[1].trim() : '',
-      answer: answerMatch ? answerMatch[1].trim() : content
+      answer: answerMatch ? answerMatch[1].trim() : cleaned
         // If only answer tags but no thinking tags, strip answer tags from the answer text
         .replace(/【回答】\s*/, '')
         .replace(/\s*【\/回答】/, ''),

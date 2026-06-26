@@ -267,10 +267,10 @@ function UpdatePanel() {
       if (res.ok && res.data) {
         setResult(res.data);
       } else {
-        setError((res as any).error || '检查更新失败');
+        setError((res as any).error || '检查更新失败，请确认网络连接后重试');
       }
     } catch (err) {
-      setError((err as { message?: string })?.message || '请求失败');
+      setError((err as { message?: string })?.message || '请求失败，请检查网络连接');
     } finally {
       setChecking(false);
     }

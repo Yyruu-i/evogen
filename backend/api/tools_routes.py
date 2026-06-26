@@ -436,7 +436,8 @@ def _check_remote_version() -> dict:
             cwd=project_root,
         )
         if r.returncode != 0:
-            return {"available": False, "error": "无法连接远程仓库"}
+            err_msg = r.stderr.strip()[:100] if r.stderr.strip() else "连接远程仓库超时（10s）"
+            return {"available": False, "error": f"检查更新失败: {err_msg}"}
         # 解析最新 tag
         tags = []
         for line in r.stdout.strip().split("\n"):

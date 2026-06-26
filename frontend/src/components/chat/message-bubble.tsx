@@ -33,31 +33,24 @@ function stripToolJson(content: string): string {
 
 /**
  * Parse content for 【思考过程】 / 【/思考过程】 and 【回答】 / 【/回答】 tags.
+ * Only returns a ParsedThinking when BOTH tags are present. If either tag
+ * is missing, returns null so the content renders as plain markdown.
  * First strips tool JSON data, then parses tags.
- * Uses full closing tags so the model can explicitly mark boundaries.
- * Returns { thinking, answer } or null if no tags found.
  */
 function parseThinkingContent(content: string): ParsedThinking | null {
-  // Strip tool JSON before parsing tags
   const cleaned = stripToolJson(content);
 
-  const thinkRegex = /【思考过程】\s*([\s\S]*?)【\/思考过程】/;
-  const answerRegex = /【回答】\s*([\s\S]*?)【\/回答】/;
+  const thinkMatch = cleaned.match(/【思考过程】\s*([\s\S]*?)【\/思考过程】/);
+  const answerMatch = cleaned.match(/【回答】\s*([\s\S]*?)【\/回答】/);
 
-  const thinkMatch = cleaned.match(thinkRegex);
-  const answerMatch = cleaned.match(answerRegex);
+  // All three models must output both tags together; if either is
+  // missing, render the content as-is without any card.
+  if (!thinkMatch || !answerMatch) return null;
 
-  if (thinkMatch || answerMatch) {
-    return {
-      thinking: thinkMatch ? thinkMatch[1].trim() : '',
-      answer: answerMatch ? answerMatch[1].trim() : cleaned
-        // If only answer tags but no thinking tags, strip answer tags from the answer text
-        .replace(/【回答】\s*/, '')
-        .replace(/\s*【\/回答】/, ''),
-    };
-  }
-
-  return null;
+  return {
+    thinking: thinkMatch[1].trim(),
+    answer: answerMatch[1].trim(),
+  };
 }
 
 export function MessageBubble({ role, content, timestamp, isStreaming }: MessageBubbleProps) {

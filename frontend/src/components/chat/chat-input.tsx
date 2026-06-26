@@ -2,6 +2,10 @@ import { useRef, useEffect, useState, useCallback } from 'react';
 import { Send, Square, Mic, MicOff } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
+// Type declarations for Web Speech API (not in all TS libs — Chrome only)
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const SpeechRecognitionAPI: any = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+
 interface ChatInputProps {
   value: string;
   onChange: (value: string) => void;
@@ -23,7 +27,8 @@ export function ChatInput({
 }: ChatInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [isListening, setIsListening] = useState(false);
-  const recognitionRef = useRef<SpeechRecognition | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const recognitionRef = useRef<any>(null);
 
   // Auto-resize textarea
   useEffect(() => {
@@ -44,8 +49,8 @@ export function ChatInput({
 
   const handleVoiceInput = useCallback(() => {
     // Check browser support
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
+    const SR: any = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SR) {
       alert('您的浏览器不支持语音识别，请使用 Chrome 浏览器。');
       return;
     }
@@ -57,19 +62,19 @@ export function ChatInput({
       return;
     }
 
-    const recognition = new SpeechRecognition();
+    const recognition = new SR();
     recognitionRef.current = recognition;
     recognition.lang = 'zh-CN';
     recognition.continuous = false;
     recognition.interimResults = true;
     recognition.maxAlternatives = 1;
 
-    recognition.onresult = (event: SpeechRecognitionEvent) => {
+    recognition.onresult = (event: any) => {
       const transcript = event.results[0][0].transcript;
       onChange(transcript);
     };
 
-    recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+    recognition.onerror = (event: any) => {
       console.warn('Speech recognition error:', event.error);
       setIsListening(false);
       if (event.error === 'not-allowed') {

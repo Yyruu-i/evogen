@@ -270,7 +270,7 @@ function UpdatePanel() {
         setError((res as any).error || '检查更新失败');
       }
     } catch (err) {
-      setError(err?.message || '请求失败');
+      setError((err as { message?: string })?.message || '请求失败');
     } finally {
       setChecking(false);
     }

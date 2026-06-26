@@ -863,6 +863,11 @@ async def _tool_loop_stream_generator(
     except Exception:
         pass
 
+    # ── 检测当前模型是否支持 reasoning（思考模式）──
+    current_model = _get_current_model().lower()
+    supports_reasoning = any(kw in current_model for kw in ["reasoner", "r1", "deepseek-reasoner"])
+    yield f"data: {json.dumps({'status': 'reasoning_capability', 'supported': supports_reasoning})}\n\n"
+
     while iteration < max_rounds:
         iteration += 1
 

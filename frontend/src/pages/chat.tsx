@@ -25,6 +25,7 @@ export function ChatPage() {
   const [streamingUi, setStreamingUi] = useState(false);
   const [thinkingExpanded, setThinkingExpanded] = useState(false);
   const [reasoningText, setReasoningText] = useState('');
+  const [reasoningSupported, setReasoningSupported] = useState(true);
   const thinkingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const qc = useQueryClient();
   const { state: chat, setMessages, setStreaming, setActiveSession, updateLastAssistant, finalizeLastAssistant, clearMessages } = useChatContext();
@@ -167,6 +168,11 @@ export function ChatPage() {
               setThinkingExpanded(true);
               continue;
             }
+            // ── 接收 reasoning 能力标志 ──
+            if (parsed.status === 'reasoning_capability' && parsed.supported === false) {
+              setReasoningSupported(false);
+              continue;
+            }
             if (parsed.chunk) {
               updateLastAssistantRef.current(parsed.chunk, 'sse-');
             }
@@ -251,7 +257,7 @@ export function ChatPage() {
       {/* ── Content ────────────────────────────────────────────── */}
       <main className="flex flex-col flex-1">
         {/* ── Thinking bar (above all content) ──────────────── */}
-        {(streamingUi || thinkingExpanded || reasoningText) && (
+        {(reasoningSupported && (streamingUi || thinkingExpanded || reasoningText)) && (
           <div className="px-4 md:px-6 pt-3">
             <div className="max-w-3xl mx-auto">
               <button

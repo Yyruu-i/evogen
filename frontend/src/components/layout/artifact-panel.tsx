@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Highlight, themes } from 'prism-react-renderer';
-import { Code2, Image, FileText, PanelRightClose, PanelRightOpen, X, ChevronDown } from 'lucide-react';
+import { Code2, Image, FileText, PanelRightClose, PanelRightOpen, X, ChevronDown, Download } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { artifactsApi } from '@/lib/api';
@@ -14,6 +14,37 @@ const tabConfig: { id: ArtifactTab; label: string; icon: typeof Code2 }[] = [
   { id: 'image', label: '图像', icon: Image },
   { id: 'doc', label: '文档', icon: FileText },
 ];
+
+/** Export artifact content to Word document via backend */
+async function exportToWord(artifact: ArtifactType): Promise<void> {
+  try {
+    const token = (() => { try { return localStorage.getItem('evogen-auth-token') || ''; } catch { return ''; } })();
+    const res = await fetch('/api/v1/resource/export-docx', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({
+        content: artifact.content,
+        title: artifact.title || 'EvoGen 文档',
+      }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${artifact.title || 'export'}.docx`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    console.error('Word export failed:', err);
+    alert('导出 Word 失败，请重试');
+  }
+}
 
 export function ArtifactPanel() {
   const [isOpen, setIsOpen] = useState(true);
@@ -220,6 +251,27 @@ export function ArtifactPanel() {
                     </button>
                   </div>
 
+                  {/* Export Word button */}
+                  {(activeTab === 'code' || activeTab === 'doc') && (
+                    <div className="px-3 pb-2 flex justify-end">
+                      <button
+                        className="flex items-center gap-1 px-2 py-1 text-[10px] font-medium rounded-md transition-all hover:opacity-80"
+                        style={{
+                          background: 'rgba(184,192,255,0.08)',
+                          color: 'var(--color-holo)',
+                        }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          exportToWord(artifact);
+                        }}
+                        title="导出为 Word 文档"
+                      >
+                        <Download className="w-3 h-3" />
+                        Word
+                      </button>
+                    </div>
+                  )}
+
                   {/* Content — code with Prism syntax highlighting */}
                   {(activeTab === 'code' || activeTab === 'doc') && (
                     <div
@@ -242,11 +294,12 @@ export function ArtifactPanel() {
                               activeTab === 'doc' && 'whitespace-pre-wrap',
                             )}
                             style={{
-                              background: 'var(--color-bg-tertiary)',
+                              background: 'var(--color-code-bg)',
                               padding: '12px',
                               fontFamily: 'var(--font-mono)',
-                              border: '1px solid var(--color-border)',
+                              border: '1px solid var(--color-code-border)',
                               borderTop: 'none',
+                              borderRadius: '0 0 8px 8px',
                             }}
                           >
                             {tokens.map((line, i) => (

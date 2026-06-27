@@ -45,6 +45,10 @@
     --color-mint: #00aa66;
     --color-mint-glow: rgba(0, 170, 102, 0.25);
 
+    /* ── Colors ──────────────────────────────────────────────── */
+    --color-code-bg: #f6f8fa;
+    --color-code-border: rgba(0,0,0,0.10);
+
     /* ── Text ────────────────────────────────────────────────── */
     --color-text-primary: #1a1a2e;
     --color-text-secondary: #555577;
@@ -152,6 +156,10 @@
     --color-cyan: #00f0ff;
     --color-cyan-glow: rgba(0, 240, 255, 0.25);
 
+    /* ── Code blocks ─────────────────────────────────────────── */
+    --color-code-bg: #011627;
+    --color-code-border: rgba(184, 192, 255, 0.12);
+
     --color-text-primary: #e4e4f0;
     --color-text-secondary: #8888aa;
     --color-text-muted: #555577;
@@ -179,7 +187,7 @@
     color: var(--color-text-primary);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    font-size: 14px;
+    font-size: 15px;
     line-height: 1.6;
     letter-spacing: 0.01em;
     transition: background var(--transition-slow), color var(--transition-slow);

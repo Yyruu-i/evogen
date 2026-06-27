@@ -26,6 +26,7 @@ import { SkillsLocalPage } from '@/pages/skills-local';
 import { SkillsHubPage } from '@/pages/skills-hub';
 import { SkillsDetailPage } from '@/pages/skills-detail';
 import { ToolsPage } from '@/pages/tools';
+import { KnowledgePage } from '@/pages/knowledge';
 import { SettingsPage } from '@/pages/settings';
 import { SettingsModelsPage } from '@/pages/settings-models';
 import { SettingsPlatformsPage } from '@/pages/settings-platforms';
@@ -109,6 +110,9 @@ function AppRoutes() {
 
         {/* Tools */}
         <Route path="tools" element={<ToolsPage />} />
+
+        {/* Knowledge */}
+        <Route path="knowledge" element={<KnowledgePage />} />
 
         {/* Settings */}
         <Route path="settings" element={<SettingsPage />}>

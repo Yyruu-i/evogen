@@ -16,6 +16,7 @@ interface ChatContextType {
   updateLastAssistant: (chunk: string, prefix: string) => void;
   finalizeLastAssistant: () => void;
   clearMessages: () => void;
+  setReasoning: (content: string) => void;
 }
 
 const ChatContext = createContext<ChatContextType | null>(null);
@@ -60,8 +61,19 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     setState({ messages: [], streaming: false, activeSessionId: '' });
   }, []);
 
+  const setReasoning = useCallback((content: string) => {
+    setState((prev) => {
+      const msgs = prev.messages;
+      const idx = msgs.length - 1;
+      if (idx < 0 || msgs[idx].role !== 'assistant') return prev;
+      const updated = [...msgs];
+      updated[idx] = { ...updated[idx], reasoning: (updated[idx].reasoning || '') + content };
+      return { ...prev, messages: updated };
+    });
+  }, []);
+
   return (
-    <ChatContext.Provider value={{ state, setMessages, setStreaming, setActiveSession, updateLastAssistant, finalizeLastAssistant, clearMessages }}>
+    <ChatContext.Provider value={{ state, setMessages, setStreaming, setActiveSession, updateLastAssistant, finalizeLastAssistant, clearMessages, setReasoning }}>
       {children}
     </ChatContext.Provider>
   );

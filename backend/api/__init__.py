@@ -15,6 +15,7 @@ from backend.api.tools_routes import router as tools_router
 from backend.api.resource_routes import router as resource_router
 from backend.api.system_routes import router as system_router
 from backend.api.browser_routes import router as browser_router
+from backend.api.knowledge_routes import router as knowledge_router
 
 router = APIRouter(prefix="/api/v1")
 
@@ -31,5 +32,6 @@ router.include_router(resource_router)
 router.include_router(system_router)
 router.include_router(browser_router)
 router.include_router(auth_router)
+router.include_router(knowledge_router)
 
 __all__ = ["router"]

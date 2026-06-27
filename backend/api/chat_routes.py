@@ -169,6 +169,88 @@ ALL_TOOLS: list[dict] = BROWSER_TOOLS + [
     },
 ]
 
+# ── 自定义工具动态合并 ──
+
+_CUSTOM_TOOLS_CACHE: dict[str, list[dict]] = {}
+
+def _get_all_tools_for_user(user_id: str) -> list[dict]:
+    """获取全部可用工具（内置工具 + 当前用户的自定义工具）。
+
+    自定义工具从 tools_routes 的 _custom_tools 字典读取，用户隔离。
+    返回 OpenAI function-calling 格式的工具列表。
+    """
+    base = list(ALL_TOOLS)
+    # 从缓存获取，避免重复读取
+    if user_id in _CUSTOM_TOOLS_CACHE:
+        return base + _CUSTOM_TOOLS_CACHE[user_id]
+
+    try:
+        from backend.api.tools_routes import _custom_tools
+        user_tools = _custom_tools.get(user_id, [])
+        if user_tools:
+            custom_formatted = []
+            for t in user_tools:
+                params_properties: dict = {}
+                params_required: list = []
+                for p in t.get("parameters", []):
+                    pname = p.get("name", "param")
+                    ptype = p.get("type", "string")
+                    pdesc = p.get("description", "")
+                    params_properties[pname] = {"type": ptype, "description": pdesc}
+                    if p.get("required", False):
+                        params_required.append(pname)
+                custom_formatted.append({
+                    "type": "function",
+                    "function": {
+                        "name": t.get("name", "custom_tool"),
+                        "description": t.get("description", ""),
+                        "parameters": {
+                            "type": "object",
+                            "properties": params_properties,
+                            "required": params_required,
+                        },
+                    },
+                })
+            _CUSTOM_TOOLS_CACHE[user_id] = custom_formatted
+            return base + custom_formatted
+    except Exception as e:
+        logger.warning(f"Failed to load custom tools for user={user_id}: {e}")
+
+    _CUSTOM_TOOLS_CACHE[user_id] = []
+    return base
+
+
+def _get_skills_for_user(user_id: str) -> str:
+    """获取当前用户的技能描述文本，用于注入 system prompt。
+
+    从 skills_routes 读取用户的自定义技能，返回格式化的提示文本。
+    """
+    try:
+        from backend.api.skills_routes import _parse_skill_frontmatter, _SKILLS_DIRS
+        skill_texts: list[str] = []
+        for skills_dir in _SKILLS_DIRS:
+            user_skill_dir = skills_dir / user_id
+            if not user_skill_dir.is_dir():
+                continue
+            for category_dir in sorted(user_skill_dir.iterdir()):
+                if not category_dir.is_dir():
+                    continue
+                for skill_dir in sorted(category_dir.iterdir()):
+                    skill_file = skill_dir / "SKILL.md"
+                    if not skill_file.exists():
+                        continue
+                    meta = _parse_skill_frontmatter(skill_file)
+                    if meta:
+                        name = meta.get("name") or skill_dir.name
+                        desc = meta.get("description", "")
+                        skill_texts.append(f"- {name}: {desc}")
+        if skill_texts:
+            return "\n\n## 可用技能\n你可以使用以下技能:\n" + "\n".join(skill_texts)
+    except Exception as e:
+        logger.warning(f"Failed to load skills for user={user_id}: {e}")
+    return ""
+
+
 # ── 工具调用限制 ──
 
 MAX_TOOL_ITERATIONS = 8  # 最多工具调用轮数，防止死循环（单个工具循环内）
@@ -178,14 +260,18 @@ MAX_TOOL_ITERATIONS = 8  # 最多工具调用轮数，防止死循环（单个�
 
 SUBTASK_DETECTION_PROMPT = """你是一个任务规划专家。请分析用户请求，判断它是否是一个复杂任务。
 
-复杂任务的判断标准：任务需要 2 个或更多不同领域的子任务才能完成，且这些子任务可以并行执行。
+复杂任务的判断标准：任务需要 2 个或更多不同领域的子任务才能完成，且这些子任务可以并行或按依赖顺序执行。
 例如：
 - "帮我开发一个登录功能" → 需要"设计数据库"、"编写后端API"、"开发前端页面"、"编写测试" → 复杂任务
 - "帮我查一下今天的天气" → 简单任务
 - "帮我写一个 Python 脚本解析 CSV 文件并生成报告" → 复杂任务（解析+生成报告可拆分）
+- "帮我扫描127.0.0.1的端口然后做漏洞检测" → 复杂任务，port_scan 依赖完成后才能 vuln_scan
 
 如果是复杂任务，请输出 JSON 格式：
-{"is_complex": true, "task_title": "任务标题", "subtasks": [{"id": 1, "name": "子任务名", "description": "子任务描述"}, ...]}
+{"is_complex": true, "task_title": "任务标题", "subtasks": [{"id": 1, "name": "子任务名", "description": "子任务描述", "tools": ["port_scan", "vuln_scan"], "depends_on": []}, ...]}
+
+tools字段：该子任务需要的工具列表，可选值有 port_scan, vuln_scan, web_search, browser_navigate, browser_screenshot
+depends_on字段：该子任务依赖的其他子任务id列表（空数组表示无依赖）
 
 如果是简单任务，请输出：
 {"is_complex": false}
@@ -226,24 +312,49 @@ async def _detect_complex_task(message: str) -> dict:
     return {"is_complex": False}
 
 
-async def _execute_subtask(subtask: dict, user_message: str, session_id: str, user_id: str) -> str:
-    """通过直接调用 LLM 执行子任务（后备方案，不依赖 hermes CLI）."""
-    prompt = f"""你是一个专门负责子任务 "{subtask['name']}" 的 Agent。
-子任务描述：{subtask['description']}
-原始用户请求：{user_message}
+async def _execute_subtask(subtask: dict, user_message: str, session_id: str, user_id: str, subtask_results: dict[int, str] | None = None) -> str:
+    """通过独立 LLM 调用执行子任务（真实拆分，每个子Agent有独立角色和工具集）。
 
-请专注于完成分配给您的子任务，输出完整的结果。不要输出多余的元数据信息。"""
-    
+    子任务可以指定 tools（工具列表）和 depends_on（依赖的 subtask id 列表）。
+    """
+    tools = subtask.get("tools", [])
+    depends_on = subtask.get("depends_on", [])
+
+    # 构建子 Agent 的独立 system prompt
+    agent_prompt = f"你是一个专门负责「{subtask['name']}」的 Agent。\n"
+    agent_prompt += f"任务描述: {subtask['description']}\n"
+    agent_prompt += f"原始用户请求: {user_message}\n"
+
+    # 如果有依赖的子任务结果，注入作为上下文
+    if subtask_results and depends_on:
+        agent_prompt += "\n## 上游依赖执行结果\n"
+        for dep_id in depends_on:
+            dep_result = subtask_results.get(dep_id)
+            if dep_result:
+                agent_prompt += f"### 子任务 {dep_id} 结果\n{dep_result[:1000]}\n\n"
+
+    agent_prompt += "\n请专注于完成您的子任务，输出完整的结果。不要输出多余的元数据信息。"
+
+    # 工具隔离：仅为该子 Agent 提供所需的工具
+    tool_defs = None
+    if tools:
+        tool_defs = []
+        for tool_name in tools:
+            for t in ALL_TOOLS:
+                if t.get("function", {}).get("name") == tool_name:
+                    tool_defs.append(t)
+                    break
+
     try:
-        content = await _call_llm_for_subtask(prompt)
+        content = await _call_llm_for_subtask(agent_prompt, tools=tool_defs)
     except Exception as e:
         content = f"⚠️ 子任务执行失败: {str(e)[:200]}"
 
     return f"## 子任务 {subtask['id']}: {subtask['name']}\n\n{content.strip()[:2000]}"
 
 
-async def _call_llm_for_subtask(prompt: str) -> str:
-    """后备方案：直接调用 LLM 作为子任务执行."""
+async def _call_llm_for_subtask(prompt: str, tools: list[dict] | None = None) -> str:
+    """后备方案：直接调用 LLM 作为子任务执行，支持工具隔离。"""
     url = f"{LLM_BASE_URL.rstrip('/')}/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {LLM_API_KEY}",
@@ -255,6 +366,9 @@ async def _call_llm_for_subtask(prompt: str) -> str:
         "temperature": 0.3,
         "max_tokens": 2048,
     }
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(url, json=payload, headers=headers)
@@ -265,22 +379,57 @@ async def _call_llm_for_subtask(prompt: str) -> str:
     return "（子任务执行失败）"
 
 
-async def _run_subtasks_concurrent(subtasks: list[dict], original_message: str, session_id: str, user_id: str) -> str:
-    """并发执行所有子任务，汇总结果."""
-    tasks = [
-        _execute_subtask(st, original_message, session_id, user_id)
-        for st in subtasks
-    ]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+async def _run_subtasks_concurrent(subtasks: list[dict], original_message: str, session_id: str, user_id: str) -> tuple[str, dict[int, str]]:
+    """按依赖图拓扑排序执行子任务，支持依赖链 + SSE 进度通知。
 
+    subtask 格式：
+      {"id": 1, "name": "...", "description": "...", "tools": [...], "depends_on": []}
+    depends_on 为空数组的 subtask 可并行执行，有依赖的串行执行。
+    返回 (汇总文本, {subtask_id: result_text})。
+    """
+    # 拓扑排序
+    remaining = {s["id"]: s for s in subtasks}
+    completed: dict[int, str] = {}
+    results_text: dict[int, str] = {}
+
+    while remaining:
+        # 找出所有依赖已满足的子任务（可并行执行）
+        ready = []
+        for sid, st in list(remaining.items()):
+            deps = st.get("depends_on", [])
+            if all(d in completed for d in deps):
+                ready.append(st)
+                del remaining[sid]
+
+        if not ready:
+            logger.warning("Subtask cycle detected or unsatisfied dependencies")
+            break
+
+        # 并行执行就绪的子任务
+        tasks = []
+        for st in ready:
+            tasks.append(_execute_subtask(
+                st, original_message, session_id, user_id,
+                subtask_results=completed,
+            ))
+
+        chunk_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for i, st in enumerate(ready):
+            r = chunk_results[i]
+            if isinstance(r, Exception):
+                r = f"⚠️ 子任务异常: {str(r)[:200]}"
+            results_text[st["id"]] = r
+            completed[st["id"]] = r
+
+    # 汇总
     parts = ["# 自主规划执行结果", f"## 原始请求\n{original_message}\n"]
-    for i, st in enumerate(subtasks):
-        r = results[i]
-        if isinstance(r, Exception):
-            r = f"⚠️ 子任务异常: {str(r)[:200]}"
-        parts.append(r)
+    for st in subtasks:
+        r = results_text.get(st["id"], "")
+        if r:
+            parts.append(r)
 
-    return "\n\n---\n\n".join(parts)
+    return "\n\n---\n\n".join(parts), results_text
 
 
 async def _generate_summary(original_message: str, subtask_results: str) -> str:
@@ -376,11 +525,14 @@ async def _build_system_prompt(session_id: str, user_message: str, user_id: str)
 
     # 基础 system prompt
     parts.append(
-        "你是 EvoGen，一个智能助手。请用中文简洁回复。\n\n"
-        "## 对话上下文规则\n"
+        "你是 EvoGen，一个智能助手。请用中文简洁回复。\\n\\n"
+        "## 对话上下文规则\\n"
         "用户可能使用省略主语/宾语的短句（如'地址'、'在哪'、'价格呢'），"
         "你必须关联前几轮对话历史来理解省略的部分。"
-        "如果上几轮在讨论某家医院，用户说'地址'就是在问那家医院的地址。\n"
+        "如果上几轮在讨论某家医院，用户说'地址'就是在问那家医院的地址。\\n\\n"
+        "## 禁止幻觉\\n"
+        "除非用户明确提及，否则不要虚构任何部署环境信息（服务器提供商、域名、IP地址、云服务商等）。"
+        "如果你不确定某个信息，请直接说不知道，不要编造。\\n"
     )
 
     # ── 人格注入 (Fix 1) ──
@@ -406,21 +558,23 @@ async def _build_system_prompt(session_id: str, user_message: str, user_id: str)
     except Exception as e:
         logger.warning(f"Failed to inject memory snapshot: {e}")
 
-    # ── 思考过程输出规范（强约束）──
-    parts.append(
-        "\n## 思考过程输出规范\n"
-        "你必须严格按照以下格式组织你的回复：\n"
-        "如果问题需要分析或思考，请先将你的思考过程放在【思考过程】和【/思考过程】标签之间，\n"
-        "然后将最终回答放在【回答】和【/回答】标签之间。\n"
-        "例如：\n"
-        "【思考过程】\n"
-        "用户想知道今天天气如何...\n"
-        "【/思考过程】\n"
-        "【回答】\n"
-        "今天天气晴朗，适合出门。\n"
-        "【/回答】\n"
-        "如果问题不需要思考，直接回复即可，无需使用标签。\n"
-    )
+    # ── 思考过程（模型差异化处理）──
+    model_name = _get_current_model().lower()
+    is_r1 = 'r1' in model_name or 'reasoning' in model_name
+    is_chat = not is_r1 and ('chat' in model_name or 'gpt' in model_name)
+    is_v4 = not is_r1 and not is_chat  # 其余模型归为 v4 类
+
+    if is_chat:
+        # chat 类模型不支持思考展示，不注入任何约束
+        pass
+    elif is_r1:
+        # R1 类模型：通过原生 reasoning_content 展示，不注入标签约束
+        # 只需告知模型正常输出即可
+        pass
+    else:
+        # v4 类模型：仅复杂任务（有工具调用）时才展示思考过程
+        # 这里的约束通过后续调用动态注入，不在 base prompt 中固定
+        pass
 
     return "\n".join(parts)
 
@@ -557,6 +711,20 @@ def _load_recent_messages(session_id: str, max_messages: int = 20) -> list[dict]
 # ════════════════════════════════════════════════════════
 # 工具执行器
 # ════════════════════════════════════════════════════════
+
+
+def _is_tool_failure(result: str) -> bool:
+    """判断工具执行结果是否为失败。"""
+    if not result or not result.strip():
+        return True
+    lower = result.lower()
+    if result.startswith("❌") or result.startswith("⚠️"):
+        return True
+    if "error:" in lower or "exception" in lower or "failed" in lower:
+        return True
+    if "not found" in lower or "timeout" in lower or "connection refused" in lower:
+        return True
+    return False
 
 
 def _run_mcp_tool(script_path: str, method: str, arguments: dict) -> str:
@@ -762,6 +930,27 @@ async def _execute_tool(tool_name: str, arguments: dict, session_id: str, user_i
             return result
 
         else:
+            # ── 自定义工具执行（HTTP 端点）──
+            # 查找用户自定义工具
+            try:
+                from backend.api.tools_routes import _custom_tools
+                user_tools = _custom_tools.get(user_id, [])
+                for ut in user_tools:
+                    if ut.get("name") == tool_name:
+                        endpoint = ut.get("endpoint", "")
+                        if endpoint:
+                            import httpx
+                            async with httpx.AsyncClient(timeout=30.0) as client:
+                                resp = await client.post(endpoint, json=arguments)
+                                if resp.status_code == 200:
+                                    return f"✅ 自定义工具 {tool_name} 执行成功:\n{resp.text[:1000]}"
+                                else:
+                                    return f"❌ 自定义工具 {tool_name} 调用失败 (HTTP {resp.status_code}): {resp.text[:200]}"
+                        else:
+                            return f"⚠️ 自定义工具 {tool_name} 未配置端点"
+            except Exception as e:
+                logger.warning(f"Custom tool execution failed: {tool_name} {e}")
+
             return f"未知工具: {tool_name}"
 
     except Exception as e:
@@ -854,6 +1043,8 @@ async def _tool_loop_stream_generator(
     max_rounds = MAX_TOOL_ITERATIONS
     # 记录本轮扫描的上下文（用于报告生成）
     session_scan_data: dict[str, dict] = {}
+    # 工具失败计数器（连续失败2次后禁用该工具）
+    tool_fail_count: dict[str, int] = {}
     # 读取运行时配置的总轮次上限（每个工具迭代轮数限制）
     try:
         from backend.api.system_routes import get_config_value
@@ -865,7 +1056,12 @@ async def _tool_loop_stream_generator(
         iteration += 1
 
         # 调用 LLM（非流式，带工具定义）
-        result = await _call_llm_nonstream(llm_messages, tools=ALL_TOOLS)
+        result = await _call_llm_nonstream(llm_messages, tools=_get_all_tools_for_user(user_id))
+
+        # 如果 LLM 返回了 reasoning_content（R1 模型），推送给前端
+        reasoning = result.get("reasoning", "")
+        if reasoning:
+            yield f"data: {json.dumps({'status': 'reasoning', 'content': reasoning})}\n\n"
 
         # ── 情况 1：有 tool_calls → 执行工具 ──
         if result.get("tool_calls"):
@@ -881,8 +1077,34 @@ async def _tool_loop_stream_generator(
                 # 通知前端：开始执行工具
                 yield f"data: {json.dumps({'status': 'tool_start', 'tool': tool_name, 'args': tool_args})}\n\n"
 
+                # 检查工具是否已被禁用（连续失败2次）
+                if tool_fail_count.get(tool_name, 0) >= 2:
+                    disabled_msg = f"⚠️ 工具 {tool_name} 连续执行失败，已自动禁用。请尝试其他工具。"
+                    yield f"data: {json.dumps({'status': 'tool_skipped', 'tool': tool_name, 'result': disabled_msg})}\n\n"
+                    llm_messages.append({
+                        "role": "assistant",
+                        "content": result.get("content") or "",
+                    })
+                    llm_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "content": disabled_msg,
+                    })
+                    continue
+
                 # 执行工具
                 tool_result = await _execute_tool(tool_name, tool_args, session_id, user_id=user_id)
+
+                # 失败检测 + 自动切换逻辑
+                is_failure = _is_tool_failure(tool_result)
+                if is_failure:
+                    tool_fail_count[tool_name] = tool_fail_count.get(tool_name, 0) + 1
+                    yield f"data: {json.dumps({'status': 'tool_failure', 'tool': tool_name, 'fail_count': tool_fail_count[tool_name]})}\n\n"
+                    # 不自动切换工具——把失败结果喂回 LLM，让 LLM 自己决定下一步
+                    logger.info(f"Tool {tool_name} failed (count={tool_fail_count[tool_name]}), feeding result back to LLM")
+                else:
+                    # 成功后清零失败计数
+                    tool_fail_count[tool_name] = 0
 
                 # 保存工具调用和结果到数据库
                 _save_message(session_id, "system",
@@ -1536,16 +1758,16 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
             yield f"data: {json.dumps({'status': 'executing_subtasks', 'subtasks': [s['name'] for s in subtasks]})}\\n\\n"
 
             # 并行执行子任务
-            subtask_results = await _run_subtasks_concurrent(subtasks, message, session_id, user_id)
+            subtask_text, subtask_results = await _run_subtasks_concurrent(subtasks, message, session_id, user_id)
 
             # 保存执行结果
-            _save_message(session_id, "system", subtask_results[:500])
+            _save_message(session_id, "system", subtask_text[:500])
 
             # 通知前端：开始汇总
-            yield f"data: {json.dumps({'status': 'summarizing', 'message': '正在汇总子任务结果…'})}\\n\\n"
+            yield f"data: {json.dumps({'status': 'summarizing', 'message': '正在汇总子任务结果…'})}\n\n"
 
             # 汇总结果
-            summary = await _generate_summary(message, subtask_results)
+            summary = await _generate_summary(message, subtask_text)
 
             # 流式输出汇总结果
             _save_message(session_id, "assistant", summary)
@@ -1571,6 +1793,14 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
         "当用户说'打开XX网站'、'帮我搜索'、'截图'等时，直接调用对应工具。\n"
         "所有工具操作自动执行，无需向用户确认。\n"
     )
+
+    # ── 注入用户自定义技能 ──
+    try:
+        skills_text = _get_skills_for_user(user_id)
+        if skills_text:
+            system_prompt += skills_text
+    except Exception as e:
+        logger.debug(f"Skills injection skipped: {e}")
 
     # ── 漏洞知识库检索 ──
     try:

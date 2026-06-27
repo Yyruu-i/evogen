@@ -10,45 +10,16 @@ interface MessageBubbleProps {
   content: string;
   timestamp?: string;
   isStreaming?: boolean;
+  reasoning?: string; // R1 模型的原生 reasoning_content
 }
 
-interface ParsedThinking {
-  thinking: string;
-  answer: string;
-}
-
-/**
- * Parse content for 【思考过程】 / 【/思考过程】 and 【回答】 / 【/回答】 tags.
- * Uses full closing tags so the model can explicitly mark boundaries.
- * Returns { thinking, answer } or null if no tags found.
- */
-function parseThinkingContent(content: string): ParsedThinking | null {
-  const thinkRegex = /【思考过程】\s*([\s\S]*?)【\/思考过程】/;
-  const answerRegex = /【回答】\s*([\s\S]*?)【\/回答】/;
-
-  const thinkMatch = content.match(thinkRegex);
-  const answerMatch = content.match(answerRegex);
-
-  if (thinkMatch || answerMatch) {
-    return {
-      thinking: thinkMatch ? thinkMatch[1].trim() : '',
-      answer: answerMatch ? answerMatch[1].trim() : content
-        // If only answer tags but no thinking tags, strip answer tags from the answer text
-        .replace(/【回答】\s*/, '')
-        .replace(/\s*【\/回答】/, ''),
-    };
-  }
-
-  return null;
-}
-
-export function MessageBubble({ role, content, timestamp, isStreaming }: MessageBubbleProps) {
+export function MessageBubble({ role, content, timestamp, isStreaming, reasoning }: MessageBubbleProps) {
   const isUser = role === 'user';
   const isTool = role === 'tool';
   const [thinkingOpen, setThinkingOpen] = useState(true);
 
-  // Only parse thinking/answer for assistant messages
-  const parsed = !isUser && !isTool ? parseThinkingContent(content) : null;
+  // 仅 assistant 有 reasoning 时展示思考折叠条（R1 模型）
+  const hasReasoning = !isUser && !isTool && reasoning;
 
   return (
     <div className={cn('flex gap-3 group', isUser && 'flex-row-reverse')}>
@@ -86,11 +57,11 @@ export function MessageBubble({ role, content, timestamp, isStreaming }: Message
         )}
 
         {content && (
-          <div className="flex flex-col gap-2">
-            {/* ── Thinking section (collapsible card) ── */}
-            {parsed && parsed.thinking && (
+          <div className="flex flex-col gap-1">
+            {/* ── R1 思考过程：豆包风格内嵌折叠 ── */}
+            {hasReasoning && (
               <div
-                className="rounded-2xl rounded-bl-md overflow-hidden"
+                className="rounded-2xl overflow-hidden"
                 style={{
                   background: 'var(--chat-bubble-assistant)',
                   border: '1px solid var(--chat-bubble-assistant-border)',
@@ -99,20 +70,19 @@ export function MessageBubble({ role, content, timestamp, isStreaming }: Message
               >
                 <button
                   onClick={() => setThinkingOpen(!thinkingOpen)}
-                  className="flex items-center gap-2 px-4 py-2 text-[12px] font-medium transition-all w-full"
+                  className="flex items-center gap-2 px-4 py-2.5 text-[13px] font-medium transition-all w-full select-none hover:opacity-80"
                   style={{
-                    background: 'rgba(184,192,255,0.06)',
-                    borderBottom: thinkingOpen ? '1px solid var(--color-border-glass)' : 'none',
+                    background: 'transparent',
                     color: 'var(--color-text-secondary)',
                   }}
                 >
+                  <Brain className="w-4 h-4 flex-shrink-0" style={{ color: 'var(--color-accent)' }} />
+                  <span className="flex-1 text-left">已深度思考</span>
                   {thinkingOpen ? (
                     <ChevronDown className="w-3.5 h-3.5 flex-shrink-0" style={{ color: 'var(--color-text-muted)' }} />
                   ) : (
                     <ChevronRight className="w-3.5 h-3.5 flex-shrink-0" style={{ color: 'var(--color-text-muted)' }} />
                   )}
-                  <Brain className="w-3.5 h-3.5 flex-shrink-0" style={{ color: 'var(--color-holo)' }} />
-                  <span className="flex-1 text-left">思考过程</span>
                 </button>
                 {thinkingOpen && (
                   <div
@@ -121,9 +91,10 @@ export function MessageBubble({ role, content, timestamp, isStreaming }: Message
                       color: 'var(--color-text-muted)',
                       fontFamily: 'var(--font-mono)',
                       whiteSpace: 'pre-wrap',
+                      borderTop: '1px solid var(--color-border-glass)',
                     }}
                   >
-                    {parsed.thinking}
+                    {reasoning}
                   </div>
                 )}
               </div>
@@ -132,11 +103,10 @@ export function MessageBubble({ role, content, timestamp, isStreaming }: Message
             {/* ── Answer content (normal markdown) ── */}
             <div
               className={cn(
-                'px-4 py-2.5 text-[13px] leading-relaxed',
-                !parsed && (isUser
+                'px-4 py-2.5 text-[14px] leading-relaxed',
+                (isUser
                   ? 'rounded-2xl rounded-br-md text-white'
                   : 'rounded-2xl rounded-bl-md'),
-                parsed && 'rounded-2xl rounded-bl-md',
               )}
               style={
                 isUser
@@ -156,7 +126,7 @@ export function MessageBubble({ role, content, timestamp, isStreaming }: Message
               {/* Content rendering: user/tool plain text; assistant with markdown */}
               {isUser || isTool ? (
                 <div className="whitespace-pre-wrap break-words">
-                  {parsed ? parsed.answer : content}
+                  {content}
                 </div>
               ) : (
                 <div className="prose prose-sm max-w-none [&_pre]:!my-2 [&_pre]:!rounded-lg [&_code]:!text-xs [&_p]:!my-1 [&_ul]:!my-1 [&_ol]:!my-1 [&_table]:!text-xs">
@@ -164,7 +134,7 @@ export function MessageBubble({ role, content, timestamp, isStreaming }: Message
                     remarkPlugins={[remarkGfm]}
                     rehypePlugins={[rehypeHighlight]}
                   >
-                    {parsed ? parsed.answer : content}
+                    {content}
                   </ReactMarkdown>
                 </div>
               )}

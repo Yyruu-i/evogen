@@ -325,4 +325,5 @@ export interface ChatMsg {
   role: 'user' | 'assistant' | 'tool' | 'system';
   content: string;
   timestamp: string;
+  reasoning?: string; // R1 模型原生 reasoning_content
 }

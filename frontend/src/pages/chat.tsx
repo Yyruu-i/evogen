@@ -24,7 +24,7 @@ export function ChatPage() {
   const streamingRef = useRef(false);
   const [streamingUi, setStreamingUi] = useState(false);
   const qc = useQueryClient();
-  const { state: chat, setMessages, setStreaming, setActiveSession, updateLastAssistant, finalizeLastAssistant, clearMessages } = useChatContext();
+  const { state: chat, setMessages, setStreaming, setActiveSession, updateLastAssistant, finalizeLastAssistant, clearMessages, setReasoning } = useChatContext();
 
   const { data: msgData, isLoading: msgsLoading } = useSessionMessages(activeId);
 
@@ -109,6 +109,8 @@ export function ChatPage() {
   updateLastAssistantRef.current = updateLastAssistant;
   const finalizeLastAssistantRef = useRef(finalizeLastAssistant);
   finalizeLastAssistantRef.current = finalizeLastAssistant;
+  const setReasoningRef = useRef(setReasoning);
+  setReasoningRef.current = setReasoning;
   const setSearchParamsRef = useRef(setSearchParams);
   setSearchParamsRef.current = setSearchParams;
 
@@ -148,6 +150,10 @@ export function ChatPage() {
             // ── 处理普通 chunk ──
             if (parsed.chunk) {
               updateLastAssistantRef.current(parsed.chunk, 'sse-');
+            }
+            // ── 处理 reasoning（R1 模型思考过程）──
+            if (parsed.status === 'reasoning' && parsed.content) {
+              setReasoningRef.current(parsed.content);
             }
           } catch {
             if (data) updateLastAssistantRef.current(data, 'sse-');
@@ -257,6 +263,7 @@ export function ChatPage() {
                       content={msg.content}
                       timestamp={msg.timestamp}
                       isStreaming={isStreaming}
+                      reasoning={msg.reasoning}
                     />
                   );
                 })

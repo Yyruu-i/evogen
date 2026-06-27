@@ -56,7 +56,6 @@ export function Sidebar() {
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
     agent: true,
     resource: true,
-    knowledge: false,
     system: false,
   });
 
@@ -83,14 +82,8 @@ export function Sidebar() {
         { to: '/skills/local', icon: Wrench, label: '技能' },
         { to: '/tools', icon: Zap, label: '工具' },
         { to: '/experience/list', icon: BookOpen, label: '经验' },
-      ],
-    },
-    {
-      id: 'knowledge',
-      label: '知识库',
-      icon: Brain,
-      items: [
         { to: '/memory/list', icon: Brain, label: '记忆' },
+        { to: '/knowledge', icon: BookOpen, label: '知识库' },
       ],
     },
     {

@@ -997,3 +997,97 @@ async def export_resource_experience(request: ExportExperienceRequest):
             status_code=400,
             detail={"ok": False, "error": f"Unsupported format: {request.format}. Use json or zip"},
         )
+
+
+# ── Word 文档导出 ──
+
+class ExportDocxRequest(BaseModel):
+    content: str = ""
+    title: str = "EvoGen 文档"
+    artifact_id: Optional[str] = None
+    session_id: Optional[str] = None
+
+
+@router.post("/export-docx")
+async def export_docx(request: ExportDocxRequest):
+    """将 Markdown 内容或制品导出为 Word 文档 (.docx).
+
+    支持两种模式：
+    1. content + title：直接传入 Markdown 内容
+    2. artifact_id：从制品库读取内容
+    """
+    from docx import Document
+    from docx.shared import Pt, Inches, RGBColor
+
+    content = request.content
+
+    # 如果提供了 artifact_id，从制品库读取内容
+    if request.artifact_id and not content:
+        try:
+            # artifacts 存储在 messages 表或 artifacts 表
+            from backend.db.connection import get_db
+            db = get_db()
+            row = db.execute(
+                "SELECT content FROM messages WHERE id=? AND role='assistant'",
+                (request.artifact_id,),
+            ).fetchone()
+            if row:
+                # 尝试从消息内容中提取制品（代码块等）
+                msg_content = row["content"]
+                # 查找代码块
+                code_blocks = re.findall(r"```(\w*)\n(.*?)```", msg_content, re.DOTALL)
+                if code_blocks:
+                    content = "\n\n".join(
+                        f"## {lang or '代码'}\n\n{code.strip()}"
+                        for lang, code in code_blocks
+                    )
+                else:
+                    content = msg_content
+            else:
+                raise HTTPException(status_code=404, detail="制品未找到")
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"读取制品失败: {str(e)[:200]}",
+            )
+
+    if not content.strip():
+        raise HTTPException(status_code=400, detail="内容不能为空")
+
+    # 生成 Word 文档
+    doc = Document()
+    doc.add_heading(request.title or "EvoGen 文档", level=0)
+
+    # 解析 Markdown 风格格式
+    for line in content.split("\n"):
+        line_stripped = line.strip()
+
+        # 标题
+        if line_stripped.startswith("### "):
+            doc.add_heading(line_stripped[4:], level=3)
+        elif line_stripped.startswith("## "):
+            doc.add_heading(line_stripped[3:], level=2)
+        elif line_stripped.startswith("# "):
+            doc.add_heading(line_stripped[2:], level=1)
+        elif line_stripped.startswith("- ") or line_stripped.startswith("* "):
+            p = doc.add_paragraph(line_stripped[2:], style="List Bullet")
+        elif line_stripped.startswith("```"):
+            continue  # skip code fences
+        elif line_stripped:
+            doc.add_paragraph(line_stripped)
+        else:
+            doc.add_paragraph("")  # blank line
+
+    # 输出到 BytesIO
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+
+    filename = f"{request.title or 'evogen-export'}.docx"
+    return StreamingResponse(
+        buffer,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

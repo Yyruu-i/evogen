@@ -46,8 +46,8 @@
     --color-mint-glow: rgba(0, 170, 102, 0.25);
 
     /* ── Colors ──────────────────────────────────────────────── */
-    --color-code-bg: #f6f8fa;
-    --color-code-border: rgba(0,0,0,0.10);
+    --color-code-bg: #e8ecf5;
+    --color-code-border: rgba(0,0,0,0.12);
 
     /* ── Text ────────────────────────────────────────────────── */
     --color-text-primary: #1a1a2e;
@@ -187,7 +187,7 @@
     color: var(--color-text-primary);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    font-size: 15px;
+    /* font-size is set in index.html via clamp() for responsive scaling */
     line-height: 1.6;
     letter-spacing: 0.01em;
     transition: background var(--transition-slow), color var(--transition-slow);

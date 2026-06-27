@@ -127,9 +127,22 @@ export function ChatInput({
         const base64 = btoa(String.fromCharCode(...new Uint8Array(buffer)));
         content = `![${file.name}](data:${file.type};base64,${base64})`;
       } else {
-        // 文档：读取为文本
-        content = await file.text();
-        content = `📄 **上传文件**: ${file.name}\n\n\`\`\`\n${content.slice(0, 5000)}\`\`\`\n\n*（文件前 5000 字符已显示，完整内容已存入系统消息）*`;
+        // 文档：通过知识库上传接口解析文本（支持 PDF/DOCX/TXT/MD 等）
+        const formData = new FormData();
+        formData.append('file', file);
+        const res = await fetch('/api/v1/knowledge/upload-file', {
+          method: 'POST',
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+          body: formData,
+        });
+        if (res.ok) {
+          const data = await res.json();
+          content = `📄 **上传文件**: ${file.name}\n\n${data.content_preview || '（文档已上传至知识库）'}`;
+        } else {
+          // Fallback: 直接读取为纯文本
+          content = await file.text();
+          content = `📄 **上传文件**: ${file.name}\n\n\`\`\`\n${content.slice(0, 5000)}\`\`\`\n\n*（文件前 5000 字符已显示）*`;
+        }
       }
       // 插入到输入框
       onChange(content);
@@ -143,7 +156,7 @@ export function ChatInput({
 
   return (
     <div className="sticky bottom-0 pt-3 pb-4 z-10" style={{ background: 'var(--color-bg-deep)' }}>
-      <div className="max-w-3xl mx-auto px-4 md:px-6">
+      <div className="w-full max-w-[min(48rem,90vw)] mx-auto px-4 md:px-6">
         <div
           className={cn(
             'flex items-end gap-2 p-2 transition-all duration-200',

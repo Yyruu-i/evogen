@@ -793,7 +793,7 @@ async def list_resource_tools(user_id: str = Depends(get_user_id)):
 
 @router.post("/tools", status_code=201)
 async def register_resource_tool(request: RegisterToolRequest, user_id: str = Depends(get_user_id)):
-    """注册新工具到用户专属工具注册表."""
+    """注册新工具到用户专属工具注册表（同时同步到 tools_routes._custom_tools 用于 LLM 注入）."""
     registry = _load_tools_registry()
     all_tools = registry.setdefault("tools", {})
     user_tools = all_tools.setdefault(user_id, {})
@@ -813,6 +813,22 @@ async def register_resource_tool(request: RegisterToolRequest, user_id: str = De
 
     user_tools[tool_id] = tool_entry
     _save_tools_registry(registry)
+
+    # 同步到 tools_routes._custom_tools（用于 _get_all_tools_for_user 注入 LLM）
+    try:
+        from backend.api.tools_routes import _custom_tools
+        sync_list = _custom_tools.setdefault(user_id, [])
+        # 去重：移除同名的已有工具
+        sync_list[:] = [t for t in sync_list if t.get("name") != request.name]
+        sync_list.append({
+            "name": request.name,
+            "description": request.description,
+            "parameters": request.parameters.get("parameters", request.parameters) if isinstance(request.parameters, dict) else request.parameters,
+            "toolset": "custom",
+            "enabled": True,
+        })
+    except Exception as e:
+        logger.warning(f"Failed to sync custom tool to _custom_tools: {e}")
 
     logger.info(f"Tool registered: {request.name} (id={tool_id}, user={user_id})")
     return {"ok": True, "data": tool_entry}

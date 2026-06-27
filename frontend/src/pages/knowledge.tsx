@@ -91,8 +91,19 @@ export function KnowledgePage() {
     setUploading(true);
     setError('');
     try {
-      const text = await file.text();
-      await apiPost('/knowledge/upload', { content: text, source: file.name });
+      // Use the new upload-file endpoint that handles PDF/DOCX parsing
+      const token = getToken();
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await fetch('/api/v1/knowledge/upload-file', {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: formData,
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.detail || `HTTP ${res.status}`);
+      }
       await fetchEntries();
     } catch (e: any) {
       setError(e.message || '上传失败');

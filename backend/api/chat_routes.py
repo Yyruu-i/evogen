@@ -176,14 +176,63 @@ _CUSTOM_TOOLS_CACHE: dict[str, list[dict]] = {}
 def _get_all_tools_for_user(user_id: str) -> list[dict]:
     """获取全部可用工具（内置工具 + 当前用户的自定义工具）。
 
-    自定义工具从 tools_routes 的 _custom_tools 字典读取，用户隔离。
+    自定义工具优先从 tools_registry.json（持久化文件）读取，
+    同时同步到 tools_routes._custom_tools（内存缓存）。
+    确保重启后工具定义不丢失且用户隔离有效。
     返回 OpenAI function-calling 格式的工具列表。
     """
     base = list(ALL_TOOLS)
-    # 从缓存获取，避免重复读取
-    if user_id in _CUSTOM_TOOLS_CACHE:
-        return base + _CUSTOM_TOOLS_CACHE[user_id]
 
+    # 从持久化注册表读取（重启后依然有效）
+    try:
+        from backend.api.resource_routes import _load_tools_registry, _TOOLSET_CATEGORY
+        registry = _load_tools_registry()
+        all_tools = registry.get("tools", {})
+        user_tools_map = all_tools.get(user_id, {})
+        for tid, t in user_tools_map.items():
+            # 跳过非 dict 或缺少 name 的条目
+            if not isinstance(t, dict) or not t.get("name"):
+                continue
+            params_properties: dict = {}
+            params_required: list = []
+            # parameters 字段可能是 dict 格式或 list 格式
+            raw_params = t.get("parameters", {})
+            if isinstance(raw_params, dict):
+                for pname, pinfo in raw_params.items():
+                    if isinstance(pinfo, dict):
+                        ptype = pinfo.get("type", "string")
+                        pdesc = pinfo.get("description", "")
+                        params_properties[pname] = {"type": ptype, "description": pdesc}
+                        if pinfo.get("required", False):
+                            params_required.append(pname)
+                    else:
+                        params_properties[pname] = {"type": "string", "description": str(pinfo)}
+            elif isinstance(raw_params, list):
+                for p in raw_params:
+                    pname = p.get("name", "param")
+                    ptype = p.get("type", "string")
+                    pdesc = p.get("description", "")
+                    params_properties[pname] = {"type": ptype, "description": pdesc}
+                    if p.get("required", False):
+                        params_required.append(pname)
+
+            base.append({
+                "type": "function",
+                "function": {
+                    "name": t["name"],
+                    "description": t.get("description", ""),
+                    "parameters": {
+                        "type": "object",
+                        "properties": params_properties,
+                        "required": params_required,
+                    },
+                },
+            })
+        return base
+    except Exception as e:
+        logger.warning(f"Failed to load custom tools from registry for user={user_id}: {e}")
+
+    # 回退：从 tools_routes._custom_tools（内存缓存）读取
     try:
         from backend.api.tools_routes import _custom_tools
         user_tools = _custom_tools.get(user_id, [])
@@ -211,14 +260,11 @@ def _get_all_tools_for_user(user_id: str) -> list[dict]:
                         },
                     },
                 })
-            _CUSTOM_TOOLS_CACHE[user_id] = custom_formatted
             return base + custom_formatted
     except Exception as e:
-        logger.warning(f"Failed to load custom tools for user={user_id}: {e}")
+        logger.warning(f"Failed to load custom tools from memory for user={user_id}: {e}")
 
-    _CUSTOM_TOOLS_CACHE[user_id] = []
     return base
-
 
 def _get_skills_for_user(user_id: str) -> str:
     """获取当前用户的技能描述文本，用于注入 system prompt。
@@ -572,9 +618,18 @@ async def _build_system_prompt(session_id: str, user_message: str, user_id: str)
         # 只需告知模型正常输出即可
         pass
     else:
-        # v4 类模型：仅复杂任务（有工具调用）时才展示思考过程
-        # 这里的约束通过后续调用动态注入，不在 base prompt 中固定
-        pass
+        # v4 类模型：始终展示思考过程——注入 prompt 要求模型先思考再回答
+        # 思考内容以 [思考]...[/思考] 标签包裹，后端在工具循环中提取
+        parts.append(
+            "\\n\\n## 思考过程要求\\n"
+            "请在回答每个问题之前，先进行深入的思考和分析。\\n"
+            "你的思考过程用【思考过程】标签包裹（单独一段），之后再输出最终回答。\\n"
+            "例如：\\n"
+            "【思考过程】\\n"
+            "这个问题需要考虑...先分析...然后...\\n"
+            "【/思考过程】\\n"
+            "最终回答...\\n"
+        )
 
     return "\n".join(parts)
 
@@ -722,7 +777,7 @@ def _is_tool_failure(result: str) -> bool:
         return True
     if "error:" in lower or "exception" in lower or "failed" in lower:
         return True
-    if "not found" in lower or "timeout" in lower or "connection refused" in lower:
+    if "not found" in lower or "timeout" in lower or "timed out" in lower or "connection refused" in lower:
         return True
     return False
 
@@ -1106,9 +1161,10 @@ async def _tool_loop_stream_generator(
                     # 成功后清零失败计数
                     tool_fail_count[tool_name] = 0
 
-                # 保存工具调用和结果到数据库
+                # 保存工具调用和结果到数据库（隐藏原始JSON，仅保留摘要）
+                args_summary = ", ".join(f"{k}={v}" for k, v in tool_args.items())[:100]
                 _save_message(session_id, "system",
-                    f"🔧 调用工具: {tool_name}({json.dumps(tool_args, ensure_ascii=False)})\n结果: {tool_result[:500]}")
+                    f"🔧 调用工具: {tool_name}({args_summary})\\n结果: {tool_result[:200]}")
 
                 # 通知前端：工具执行完成
                 yield f"data: {json.dumps({'status': 'tool_result', 'tool': tool_name, 'result': tool_result[:300]})}\\n\\n"
@@ -1149,6 +1205,14 @@ async def _tool_loop_stream_generator(
         full_text_response = text
 
         if text:
+            # 提取思考过程（v4 模型用标签包裹）
+            thinking_match = re.search(r'【思考过程】\\n(.*?)【/思考过程】', text, re.DOTALL)
+            if thinking_match:
+                thinking_content = thinking_match.group(1).strip()
+                yield f"data: {json.dumps({'status': 'reasoning', 'content': thinking_content})}\\n\\n"
+                # 从正文中移除思考过程
+                text = text.replace(thinking_match.group(0), "").strip()
+                full_text_response = text
             # 流式输出文本（逐字输出模拟流式体验）
             # 按句子分割逐块发送，避免过于细碎
             chunk_size = 20
@@ -1788,10 +1852,15 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
 
     # ── 注入工具使用说明
     system_prompt += (
-        "\n\n## 可用工具\n"
-        "你可以使用浏览器工具来打开网页、截图、点击元素、填写表单。\n"
-        "当用户说'打开XX网站'、'帮我搜索'、'截图'等时，直接调用对应工具。\n"
-        "所有工具操作自动执行，无需向用户确认。\n"
+        "\\n\\n## 可用工具\\n"
+        "你可以使用浏览器工具来打开网页、截图、点击元素、填写表单。\\n"
+        "当用户说'打开XX网站'、'帮我搜索'、'截图'等时，直接调用对应工具。\\n"
+        "所有工具操作自动执行，无需向用户确认。\\n"
+        "\\n"
+        "## 文档生成\\n"
+        "你可以直接生成 Markdown 格式的内容（代码块、列表、表格等），"
+        "这些内容会自动作为制品显示在右侧制品面板中。\\n"
+        "用户可以在制品面板中将你的回复导出为 Word (.docx) 文件。\\n"
     )
 
     # ── 注入用户自定义技能 ──

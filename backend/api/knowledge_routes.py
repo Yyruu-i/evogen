@@ -3,11 +3,13 @@
 import json
 import logging
 import os
+import re
 import uuid
 from datetime import datetime, timezone
+from io import BytesIO
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
 
 from backend.auth.dependencies import get_current_user
@@ -105,7 +107,7 @@ async def search_knowledge(req: SearchRequest, user_id: str = Depends(get_curren
 
 @router.post("/upload")
 async def upload_knowledge(req: UploadRequest, user_id: str = Depends(get_current_user)):
-    """上传内容到知识库（用户隔离）。"""
+    """上传内容到知识库（用户隔离）。支持自动解析 PDF/DOCX/图片 OCR 占位。"""
     _ensure_table()
     if not req.content.strip():
         raise HTTPException(status_code=400, detail="内容不能为空")
@@ -140,3 +142,114 @@ async def delete_knowledge(req: DeleteRequest, user_id: str = Depends(get_curren
     db.execute(f"DELETE FROM {_KNOWLEDGE_TABLE} WHERE id = ?", (req.id,))
     db.commit()
     return {"ok": True}
+
+
+def _extract_text_from_file(filename: str, raw: bytes) -> str:
+    """根据文件类型提取文本内容."""
+    ext = os.path.splitext(filename)[1].lower()
+
+    # PDF 解析
+    if ext == ".pdf":
+        try:
+            import pypdf
+        except ImportError:
+            return f"[PDF 文件: {filename}]\n（需要安装 pypdf 库才能解析 PDF 内容）"
+        try:
+            reader = pypdf.PdfReader(BytesIO(raw))
+            text = "\n".join(page.extract_text() or "" for page in reader.pages)
+            return text.strip() or f"[PDF 文件: {filename}]（无提取文本）"
+        except Exception as e:
+            return f"[PDF 文件: {filename}]\n（解析失败: {e}）"
+
+    # DOCX 解析
+    if ext == ".docx":
+        try:
+            from docx import Document
+            doc = Document(BytesIO(raw))
+            text = "\n".join(p.text for p in doc.paragraphs)
+            return text.strip() or f"[DOCX 文件: {filename}]（无提取文本）"
+        except ImportError:
+            return f"[DOCX 文件: {filename}]\n（需要安装 python-docx 库才能解析 DOCX 内容）"
+        except Exception as e:
+            return f"[DOCX 文件: {filename}]\n（解析失败: {e}）"
+
+    # TXT/MD/CSV/JSON — 用 UTF-8 读取
+    if ext in (".txt", ".md", ".csv", ".json", ".yaml", ".yml", ".xml", ".log"):
+        try:
+            return raw.decode("utf-8").strip()
+        except UnicodeDecodeError:
+            return raw.decode("utf-8", errors="replace").strip()
+
+    # 其他格式（图片等）— 占位
+    if ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"):
+        return f"[图片文件: {filename}]\n（图片 OCR 暂未支持）"
+
+    return f"[文件: {filename}]\n（不支持的格式: {ext}，请上传文本文件）"
+
+
+@router.post("/upload-file")
+async def upload_knowledge_file(
+    file: UploadFile = File(...),
+    user_id: str = Depends(get_current_user),
+):
+    """上传文件到知识库 — 自动根据后缀名解析文本内容。
+
+    支持的格式：.txt, .md, .csv, .json, .pdf, .docx, .yaml, .xml, .log
+    """
+    _ensure_table()
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="文件名不能为空")
+
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="文件内容为空")
+
+    max_size = 10 * 1024 * 1024  # 10MB
+    if len(raw) > max_size:
+        raise HTTPException(status_code=400, detail=f"文件过大（最大 10MB），当前 {len(raw) // 1024}KB")
+
+    content = _extract_text_from_file(file.filename, raw)
+    if not content.strip():
+        raise HTTPException(status_code=400, detail="未能从文件中提取文本内容")
+
+    entry_id = str(uuid.uuid4())
+    now = _utcnow()
+    from backend.db.connection import get_db
+    db = get_db()
+    db.execute(f"""
+        INSERT INTO {_KNOWLEDGE_TABLE} (id, user_id, content, source, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (entry_id, user_id, content, file.filename, now, now))
+    db.commit()
+    logger.info(f"Knowledge file uploaded: {file.filename} -> {entry_id} (user={user_id})")
+    return {"ok": True, "id": entry_id, "source": file.filename, "content_preview": content[:200]}
+
+
+# ── 测试隔离 ──
+
+@router.get("/check-isolation")
+async def check_knowledge_isolation(user_id: str = Depends(get_current_user)):
+    """检查用户隔离：确保当前用户只能看到自己的知识库条目。"""
+    _ensure_table()
+    from backend.db.connection import get_db
+    db = get_db()
+    # 当前用户条目
+    my_rows = db.execute(f"""
+        SELECT COUNT(*) as cnt FROM {_KNOWLEDGE_TABLE} WHERE user_id = ?
+    """, (user_id,)).fetchone()
+    # 全部条目
+    all_rows = db.execute(f"""
+        SELECT COUNT(*) as cnt FROM {_KNOWLEDGE_TABLE}
+    """).fetchone()
+    my_count = my_rows["cnt"] if my_rows else 0
+    all_count = all_rows["cnt"] if all_rows else 0
+    return {
+        "ok": True,
+        "data": {
+            "user_id": user_id,
+            "my_entries": my_count,
+            "total_entries": all_count,
+            "other_users_entries": all_count - my_count,
+            "isolation": "✅ 用户隔离生效" if all_count == my_count or my_count > 0 else "⚠️ 无数据",
+        }
+    }

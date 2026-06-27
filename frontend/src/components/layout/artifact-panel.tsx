@@ -26,11 +26,14 @@ async function exportToWord(artifact: ArtifactType): Promise<void> {
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
       body: JSON.stringify({
-        content: artifact.content,
+        content: artifact.content || '',
         title: artifact.title || 'EvoGen 文档',
       }),
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) {
+      const errText = await res.text().catch(() => 'unknown');
+      throw new Error(`HTTP ${res.status}: ${errText.slice(0, 100)}`);
+    }
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -42,7 +45,7 @@ async function exportToWord(artifact: ArtifactType): Promise<void> {
     URL.revokeObjectURL(url);
   } catch (err) {
     console.error('Word export failed:', err);
-    alert('导出 Word 失败，请重试');
+    alert(`导出 Word 失败: ${err instanceof Error ? err.message : '请重试'}`);
   }
 }
 

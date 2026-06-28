@@ -222,7 +222,7 @@ async def upload_knowledge_file(
     """, (entry_id, user_id, content, file.filename, now, now))
     db.commit()
     logger.info(f"Knowledge file uploaded: {file.filename} -> {entry_id} (user={user_id})")
-    return {"ok": True, "id": entry_id, "source": file.filename, "content_preview": content[:200]}
+    return {"ok": True, "id": entry_id, "source": file.filename, "content": content, "content_preview": content[:200]}
 
 
 # ── 测试隔离 ──

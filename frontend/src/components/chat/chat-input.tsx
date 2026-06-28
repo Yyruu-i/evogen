@@ -132,7 +132,7 @@ export function ChatInput({
       let content: string;
       if (res.ok) {
         const data = await res.json();
-        content = `📄 **上传文件**: ${file.name}\n\n${data.content_preview || '（文档已上传至知识库）'}`;
+        content = `📄 **上传文件**: ${file.name}\n\n${data.content || data.content_preview || '（文档已上传至知识库）'}`;
       } else {
         // Fallback: 直接读取为纯文本
         content = await file.text();

@@ -205,9 +205,12 @@ def _scan_skills(user_id: str = "default") -> list[dict]:
 def _version_int(version_str: str) -> int:
     """将 semver 字符串转为整数版本号（主版本 * 100 + 次版本）."""
     try:
+        # YAML 可能将 version: 2 解析为 int, version: 1.0 解析为 float
+        if isinstance(version_str, (int, float)):
+            return int(version_str)
         parts = version_str.split(".")
         return int(parts[0]) * 100 + int(parts[1]) if len(parts) > 1 else int(parts[0])
-    except (ValueError, IndexError):
+    except (ValueError, IndexError, AttributeError):
         return 1
 
 

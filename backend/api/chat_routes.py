@@ -1205,14 +1205,6 @@ async def _tool_loop_stream_generator(
         full_text_response = text
 
         if text:
-            # 提取思考过程（v4 模型用标签包裹）
-            thinking_match = re.search(r'【思考过程】\\n(.*?)【/思考过程】', text, re.DOTALL)
-            if thinking_match:
-                thinking_content = thinking_match.group(1).strip()
-                yield f"data: {json.dumps({'status': 'reasoning', 'content': thinking_content})}\\n\\n"
-                # 从正文中移除思考过程
-                text = text.replace(thinking_match.group(0), "").strip()
-                full_text_response = text
             # 流式输出文本（逐字输出模拟流式体验）
             # 按句子分割逐块发送，避免过于细碎
             chunk_size = 20

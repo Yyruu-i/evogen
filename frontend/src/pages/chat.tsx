@@ -189,7 +189,7 @@ export function ChatPage() {
   }, [finalizeLastAssistant, setStreaming]);
 
   return (
-    <div className="flex flex-col h-full" style={{ background: 'var(--color-bg-deep)' }}>
+    <div className="flex flex-col h-full overflow-hidden" style={{ background: 'var(--color-bg-deep)' }}>
       {/* ── Top bar ───────────────────────────────────────────── */}
       <header
         className="h-14 md:h-16 flex items-center justify-between relative z-50 p-4 md:px-6 flex-shrink-0"
@@ -234,12 +234,12 @@ export function ChatPage() {
       </header>
 
       {/* ── Content ────────────────────────────────────────────── */}
-      <main className="flex flex-col flex-1">
+      <main className="flex flex-col flex-1 min-h-0">
         {/* ── Empty state or messages ────────────────────────── */}
         {!activeId && chat.messages.length === 0 ? (
           <WelcomeEmpty onSuggestionClick={(text) => setInput(text)} />
         ) : (
-          <section className="flex flex-col flex-1 pt-2 md:pt-4 px-4 md:px-6 pb-4 w-full max-w-[min(48rem,90vw)] mx-auto">
+          <section className="flex flex-col flex-1 pt-2 md:pt-4 px-4 md:px-6 pb-4 w-full max-w-[min(48rem,90vw)] mx-auto overflow-y-auto">
             <div className="flex-1 space-y-4">
               {msgsLoading ? (
                 <div className="space-y-4">

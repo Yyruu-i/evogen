@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
@@ -13,13 +13,47 @@ interface MessageBubbleProps {
   reasoning?: string; // R1 模型的原生 reasoning_content
 }
 
+/**
+ * 从 assistant 的完整 content 中提取思考过程和回答正文。
+ * - 有 【思考过程】标签 → 提取为 thinking，剩余作为 answer
+ * - 无标签 → 返回 { thinking: null, answer: text }（chat 模型走这个分支）
+ */
+function parseThinkingContent(text: string): { thinking: string | null; answer: string } {
+  const thinkingMatch = text.match(/【思考过程】\s*([\s\S]*?)\s*【\/思考过程】/);
+  const thinking = thinkingMatch ? thinkingMatch[1].trim() : null;
+
+  let answer = text;
+  if (thinking) {
+    answer = text.replace(/【思考过程】[\s\S]*?【\/思考过程】/, '').trim();
+  }
+
+  return { thinking, answer };
+}
+
 export function MessageBubble({ role, content, timestamp, isStreaming, reasoning }: MessageBubbleProps) {
   const isUser = role === 'user';
   const isTool = role === 'tool';
+  const isAssistant = !isUser && !isTool;
   const [thinkingOpen, setThinkingOpen] = useState(true);
 
-  // 仅 assistant 有 reasoning 时展示思考折叠条（R1 模型）
-  const hasReasoning = !isUser && !isTool && reasoning;
+  // 前端解析正文中的思考过程标签（v4 模型）
+  const parsed = useMemo(() => {
+    if (!isAssistant) return { thinking: null, answer: content };
+    return parseThinkingContent(content);
+  }, [content, isAssistant]);
+
+  // 展示思考折叠的条件：
+  // 1. r1 原生 reasoning（从 SSE 的 reasoning 事件来）
+  // 2. v4 前端从 content 解析出思考标签
+  const hasR1Reasoning = isAssistant && !!reasoning;
+  const hasV4Thinking = isAssistant && !!parsed.thinking;
+  const showThinkingBlock = hasR1Reasoning || hasV4Thinking;
+
+  // 思考折叠块显示的内容
+  const thinkingContent = reasoning || parsed.thinking || '';
+
+  // 显示的正文：user/tool 用原 content，assistant 用剥离后的 answer
+  const displayContent = isAssistant ? parsed.answer : content;
 
   return (
     <div className={cn('flex gap-3 group', isUser && 'flex-row-reverse')}>
@@ -58,8 +92,8 @@ export function MessageBubble({ role, content, timestamp, isStreaming, reasoning
 
         {content && (
           <div className="flex flex-col gap-1">
-            {/* ── R1 思考过程：豆包风格内嵌折叠 ── */}
-            {hasReasoning && (
+            {/* ── 思考折叠块（r1 原生 reasoning / v4 标签提取） ── */}
+            {showThinkingBlock && (
               <div
                 className="rounded-2xl overflow-hidden"
                 style={{
@@ -94,7 +128,7 @@ export function MessageBubble({ role, content, timestamp, isStreaming, reasoning
                       borderTop: '1px solid var(--color-border-glass)',
                     }}
                   >
-                    {reasoning}
+                    {thinkingContent}
                   </div>
                 )}
               </div>
@@ -126,7 +160,7 @@ export function MessageBubble({ role, content, timestamp, isStreaming, reasoning
               {/* Content rendering: user/tool plain text; assistant with markdown */}
               {isUser || isTool ? (
                 <div className="whitespace-pre-wrap break-words">
-                  {content}
+                  {displayContent}
                 </div>
               ) : (
                 <div className="prose prose-sm max-w-none [&_pre]:!my-2 [&_pre]:!rounded-lg [&_code]:!text-xs [&_p]:!my-1 [&_ul]:!my-1 [&_ol]:!my-1 [&_table]:!text-xs">
@@ -134,7 +168,7 @@ export function MessageBubble({ role, content, timestamp, isStreaming, reasoning
                     remarkPlugins={[remarkGfm]}
                     rehypePlugins={[rehypeHighlight]}
                   >
-                    {content}
+                    {displayContent}
                   </ReactMarkdown>
                 </div>
               )}

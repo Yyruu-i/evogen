@@ -104,6 +104,28 @@ export function ChatPage() {
     });
   }, [input, activeId, chat.messages, setMessages, qc]);
 
+  const handleSendFile = useCallback((content: string) => {
+    const text = content.trim();
+    if (!text || streamingRef.current) return;
+    const userMsg: ChatMsg = { id: generateId(), role: 'user', content: text, timestamp: new Date().toISOString() };
+    const currentMsgs = chat.messages;
+    setMessages([...currentMsgs, userMsg]);
+    streamingRef.current = true;
+    setStreamingUi(true);
+
+    const effectiveSession = activeId || chat.activeSessionId;
+    sendMessageAndStream(text, effectiveSession).finally(() => {
+      streamingRef.current = false;
+      setTimeout(() => {
+        setStreamingUi(false);
+      }, 800);
+      qc.invalidateQueries({ queryKey: ['sessions'] });
+      if (activeId) {
+        qc.invalidateQueries({ queryKey: ['sessions', activeId, 'messages'] });
+      }
+    });
+  }, [activeId, chat.messages, setMessages, qc]);
+
   // Stable refs for async callbacks
   const updateLastAssistantRef = useRef(updateLastAssistant);
   updateLastAssistantRef.current = updateLastAssistant;
@@ -278,6 +300,7 @@ export function ChatPage() {
           value={input}
           onChange={setInput}
           onSend={handleSend}
+          onSendFile={handleSendFile}
           onStop={handleStop}
           disabled={msgsLoading}
           streaming={streamingUi}

@@ -1,5 +1,5 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
-import { Send, Square, Mic, MicOff, Plus, Paperclip, Image, FileText, X } from 'lucide-react';
+import { Send, Square, Mic, MicOff, Plus, FileText, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 // Type declarations for Web Speech API
@@ -11,6 +11,7 @@ interface ChatInputProps {
   value: string;
   onChange: (value: string) => void;
   onSend: () => void;
+  onSendFile?: (content: string) => void;
   onStop?: () => void;
   disabled?: boolean;
   streaming?: boolean;
@@ -21,6 +22,7 @@ export function ChatInput({
   value,
   onChange,
   onSend,
+  onSendFile,
   onStop,
   disabled,
   streaming,
@@ -31,7 +33,6 @@ export function ChatInput({
   const [showUploadMenu, setShowUploadMenu] = useState(false);
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const imageInputRef = useRef<HTMLInputElement>(null);
   const uploadMenuRef = useRef<HTMLDivElement>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const recognitionRef = useRef<any>(null);
@@ -115,37 +116,30 @@ export function ChatInput({
     return () => document.removeEventListener('mousedown', handler);
   }, [showUploadMenu]);
 
-  const handleFileUpload = async (file: File, type: 'doc' | 'image') => {
+  const handleFileUpload = async (file: File) => {
     setShowUploadMenu(false);
     setUploading(true);
     try {
       const token = (() => { try { return localStorage.getItem('evogen-auth-token') || ''; } catch { return ''; } })();
+      // 文档：通过知识库上传接口解析文本（支持 PDF/DOCX/TXT/MD 等）
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await fetch('/api/v1/knowledge/upload-file', {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: formData,
+      });
       let content: string;
-      if (type === 'image') {
-        // 图片：转 base64
-        const buffer = await file.arrayBuffer();
-        const base64 = btoa(String.fromCharCode(...new Uint8Array(buffer)));
-        content = `![${file.name}](data:${file.type};base64,${base64})`;
+      if (res.ok) {
+        const data = await res.json();
+        content = `📄 **上传文件**: ${file.name}\n\n${data.content_preview || '（文档已上传至知识库）'}`;
       } else {
-        // 文档：通过知识库上传接口解析文本（支持 PDF/DOCX/TXT/MD 等）
-        const formData = new FormData();
-        formData.append('file', file);
-        const res = await fetch('/api/v1/knowledge/upload-file', {
-          method: 'POST',
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
-          body: formData,
-        });
-        if (res.ok) {
-          const data = await res.json();
-          content = `📄 **上传文件**: ${file.name}\n\n${data.content_preview || '（文档已上传至知识库）'}`;
-        } else {
-          // Fallback: 直接读取为纯文本
-          content = await file.text();
-          content = `📄 **上传文件**: ${file.name}\n\n\`\`\`\n${content.slice(0, 5000)}\`\`\`\n\n*（文件前 5000 字符已显示）*`;
-        }
+        // Fallback: 直接读取为纯文本
+        content = await file.text();
+        content = `📄 **上传文件**: ${file.name}\n\n\`\`\`\n${content.slice(0, 5000)}\`\`\`\n\n*（文件前 5000 字符已显示）*`;
       }
-      // 插入到输入框
-      onChange(content);
+      // 直接发送到对话框（不插入输入框）
+      onSendFile?.(content);
     } catch (err) {
       console.error('File upload failed:', err);
       alert('文件读取失败');
@@ -220,44 +214,24 @@ export function ChatInput({
                     className="flex items-center gap-2 w-full px-3 py-2.5 text-[12px] font-medium transition-colors hover:opacity-80"
                     style={{ color: 'var(--color-text-primary)' }}
                     onClick={() => {
-                      document.getElementById('chat-image-input')?.click();
-                    }}
-                  >
-                    <Image className="w-4 h-4" style={{ color: 'var(--color-accent)' }} />
-                    上传图片
-                  </button>
-                  <button
-                    className="flex items-center gap-2 w-full px-3 py-2.5 text-[12px] font-medium transition-colors hover:opacity-80"
-                    style={{ color: 'var(--color-text-primary)' }}
-                    onClick={() => {
                       document.getElementById('chat-file-input')?.click();
                     }}
-                  >
-                    <FileText className="w-4 h-4" style={{ color: 'var(--color-holo)' }} />
-                    上传文档
-                  </button>
-                </div>
-              )}
+                >
+                  <FileText className="w-4 h-4" style={{ color: 'var(--color-holo)' }} />
+                  上传文档
+                </button>
+              </div>
+            )}
 
-              {/* Hidden file inputs */}
-              <input
-                id="chat-image-input"
-                type="file"
-                accept="image/*"
-                className="hidden"
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (file) handleFileUpload(file, 'image');
-                }}
-              />
-              <input
+            {/* Hidden file input */}
+            <input
                 id="chat-file-input"
                 type="file"
                 accept=".txt,.md,.pdf,.docx,.csv,.json"
                 className="hidden"
                 onChange={(e) => {
                   const file = e.target.files?.[0];
-                  if (file) handleFileUpload(file, 'doc');
+                  if (file) handleFileUpload(file);
                 }}
               />
             </div>

@@ -1101,9 +1101,12 @@ async def export_docx(request: ExportDocxRequest):
     doc.save(buffer)
     buffer.seek(0)
 
-    filename = f"{request.title or 'evogen-export'}.docx"
+    raw_title = request.title or "evogen-export"
+    # 中文/非 ASCII 文件名用 percent-encoding（RFC 5987）
+    import urllib.parse
+    safe_filename = urllib.parse.quote(f"{raw_title}.docx", safe="")
     return StreamingResponse(
         buffer,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{safe_filename}"},
     )

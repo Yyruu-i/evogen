@@ -52,7 +52,17 @@ export function KnowledgePage() {
   const [searching, setSearching] = useState(false);
   const [searchResults, setSearchResults] = useState<KnowledgeEntry[] | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const toggleExpand = (id: string) => {
+    setExpandedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   const fetchEntries = useCallback(async () => {
     setError('');
@@ -229,7 +239,10 @@ export function KnowledgePage() {
               </span>
             </div>
           ) : (
-            displayEntries.map(entry => (
+            displayEntries.map(entry => {
+              const isExpanded = expandedIds.has(entry.id);
+              const needsExpand = entry.content.length > 150;
+              return (
               <div
                 key={entry.id}
                 className="rounded-xl p-4 transition-all hover:shadow-sm"
@@ -246,9 +259,21 @@ export function KnowledgePage() {
                         {entry.source}
                       </span>
                     </div>
-                    <p className="text-[13px] leading-relaxed line-clamp-3" style={{ color: 'var(--color-text-primary)' }}>
+                    <p
+                      className={`text-[13px] leading-relaxed whitespace-pre-wrap ${isExpanded ? '' : 'line-clamp-5'}`}
+                      style={{ color: 'var(--color-text-primary)' }}
+                    >
                       {entry.content}
                     </p>
+                    {needsExpand && (
+                      <button
+                        className="text-[12px] mt-1 flex items-center gap-1 hover:opacity-80 transition-opacity"
+                        style={{ color: 'var(--color-accent)' }}
+                        onClick={() => toggleExpand(entry.id)}
+                      >
+                        {isExpanded ? '收起 ▲' : '展开全部 ▼'}
+                      </button>
+                    )}
                     <p className="text-[11px] mt-1" style={{ color: 'var(--color-text-muted)' }}>
                       {new Date(entry.created_at).toLocaleString('zh-CN')}
                     </p>
@@ -262,7 +287,8 @@ export function KnowledgePage() {
                   </button>
                 </div>
               </div>
-            ))
+              );
+            })
           )}
         </div>
       </main>

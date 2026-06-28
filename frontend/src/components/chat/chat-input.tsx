@@ -156,7 +156,7 @@ export function ChatInput({
 
   return (
     <div className="sticky bottom-0 pt-3 pb-4 z-10" style={{ background: 'var(--color-bg-deep)' }}>
-      <div className="w-full max-w-[min(48rem,90vw)] mx-auto px-4 md:px-6">
+      <div className="w-full mx-auto px-4 md:px-6">
         <div
           className={cn(
             'flex items-end gap-2 p-2 transition-all duration-200',

@@ -146,7 +146,7 @@ export function SettingsModelsPage() {
       ) : (
         <>
           <div className="space-y-3">
-            {allModels.map((model) => {
+            {allModels.map((model: { id: string; label: string; description: string; provider: string; apiKeyMasked?: string; isCustom?: true }) => {
               const isActive = currentModel === model.id;
               const isCustom = 'isCustom' in model && model.isCustom;
               return (

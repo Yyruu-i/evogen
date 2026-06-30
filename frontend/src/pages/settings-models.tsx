@@ -43,7 +43,7 @@ export function SettingsModelsPage() {
   const loadCustomModels = async () => {
     try {
       const models = await systemApi.getCustomModels();
-      setCustomModels(models as Record<string, CustomModel>);
+      setCustomModels(models as any);
     } catch (err) {
       console.warn('Failed to load custom models:', err);
     }
@@ -97,7 +97,14 @@ export function SettingsModelsPage() {
     }
   };
 
-  const allModels = [
+  const allModels: Array<{
+    id: string;
+    label: string;
+    description: string;
+    provider: string;
+    apiKeyMasked?: string;
+    isCustom?: true;
+  }> = [
     ...BUILTIN_MODELS,
     ...Object.entries(customModels).map(([id, m]) => ({
       id,

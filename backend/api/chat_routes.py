@@ -57,6 +57,32 @@ def _get_current_model() -> str:
         pass
     return LLM_MODEL
 
+
+def _get_llm_api_key() -> str:
+    """获取当前模型的 API Key（优先从自定义模型配置读取）。"""
+    model = _get_current_model()
+    try:
+        from backend.api.system_routes import get_custom_model_config
+        cfg = get_custom_model_config(model)
+        if cfg and cfg.get("api_key"):
+            return cfg["api_key"]
+    except Exception:
+        pass
+    return LLM_API_KEY
+
+
+def _get_llm_base_url() -> str:
+    """获取当前模型的 Base URL（优先从自定义模型配置读取）。"""
+    model = _get_current_model()
+    try:
+        from backend.api.system_routes import get_custom_model_config
+        cfg = get_custom_model_config(model)
+        if cfg and cfg.get("base_url"):
+            return cfg["base_url"]
+    except Exception:
+        pass
+    return LLM_BASE_URL
+
 # ── Browser 工具定义 (OpenAI function-calling 格式) ──
 
 BROWSER_TOOLS: list[dict] = [
@@ -327,9 +353,9 @@ depends_on字段：该子任务依赖的其他子任务id列表（空数组表�
 
 async def _detect_complex_task(message: str) -> dict:
     """使用 LLM 检测是否是复杂任务，返回拆解结果."""
-    url = f"{LLM_BASE_URL.rstrip('/')}/v1/chat/completions"
+    url = f"{_get_llm_base_url().rstrip('/')}/v1/chat/completions"
     headers = {
-        "Authorization": f"Bearer {LLM_API_KEY}",
+        "Authorization": f"Bearer {_get_llm_api_key()}",
         "Content-Type": "application/json",
     }
     payload = {
@@ -401,9 +427,9 @@ async def _execute_subtask(subtask: dict, user_message: str, session_id: str, us
 
 async def _call_llm_for_subtask(prompt: str, tools: list[dict] | None = None) -> str:
     """后备方案：直接调用 LLM 作为子任务执行，支持工具隔离。"""
-    url = f"{LLM_BASE_URL.rstrip('/')}/v1/chat/completions"
+    url = f"{_get_llm_base_url().rstrip('/')}/v1/chat/completions"
     headers = {
-        "Authorization": f"Bearer {LLM_API_KEY}",
+        "Authorization": f"Bearer {_get_llm_api_key()}",
         "Content-Type": "application/json",
     }
     payload = {
@@ -480,9 +506,9 @@ async def _run_subtasks_concurrent(subtasks: list[dict], original_message: str, 
 
 async def _generate_summary(original_message: str, subtask_results: str) -> str:
     """由主 LLM 汇总子任务结果为最终回复."""
-    url = f"{LLM_BASE_URL.rstrip('/')}/v1/chat/completions"
+    url = f"{_get_llm_base_url().rstrip('/')}/v1/chat/completions"
     headers = {
-        "Authorization": f"Bearer {LLM_API_KEY}",
+        "Authorization": f"Bearer {_get_llm_api_key()}",
         "Content-Type": "application/json",
     }
     prompt = f"""你是一个项目管理专家。以下是用户请求和各子任务的执行结果，请将它们整合成一份清晰、完整的最终回复。
@@ -1026,9 +1052,9 @@ async def _call_llm_nonstream(
 
     返回格式: {"content": str|None, "tool_calls": list|None}
     """
-    url = f"{LLM_BASE_URL.rstrip('/')}/v1/chat/completions"
+    url = f"{_get_llm_base_url().rstrip('/')}/v1/chat/completions"
     headers = {
-        "Authorization": f"Bearer {LLM_API_KEY}",
+        "Authorization": f"Bearer {_get_llm_api_key()}",
         "Content-Type": "application/json",
     }
     payload: dict = {
@@ -1790,7 +1816,7 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
         except Exception as e:
             logger.warning(f"Tavily search failed: {e}")
 
-    if not LLM_API_KEY:
+    if not _get_llm_api_key():
         yield f"data: {json.dumps({'chunk': '⚠️ 未配置 LLM API Key。请在 ~/.hermes/.env 中设置 DEEPSEEK_API_KEY。'})}\\n\\n"
         yield "data: [DONE]\\n\\n"
         return

@@ -392,4 +392,22 @@ export const systemApi = {
       method: 'POST',
     });
   },
+
+  // ── 自定义模型 ──
+  async getCustomModels() {
+    return request<Record<string, { label: string; base_url: string; description: string; api_key_masked?: string }>>('/system/models/custom');
+  },
+
+  async addCustomModel(body: { id: string; label: string; api_key: string; base_url: string; description?: string }) {
+    return request<{ id: string; label: string; api_key: string; base_url: string; description: string }>('/system/models/custom', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+
+  async deleteCustomModel(modelId: string) {
+    return request<{ deleted: string }>(`/system/models/custom/${modelId}`, {
+      method: 'DELETE',
+    });
+  },
 };

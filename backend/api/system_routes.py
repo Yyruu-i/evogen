@@ -311,6 +311,7 @@ def _read_recent_logs(
 _runtime_config: dict = {
     "max_agent_rounds": 90,
     "llm_model": os.getenv("LLM_MODEL", "deepseek-chat"),
+    "custom_models": {},
 }
 
 # 持久化配置文件路径
@@ -352,7 +353,7 @@ async def get_config():
 @router.put("/config")
 async def update_config(config: dict):
     """更新系统运行时配置."""
-    allowed_keys = {"max_agent_rounds", "llm_model"}
+    allowed_keys = {"max_agent_rounds", "llm_model", "custom_models"}
     for key, value in config.items():
         if key in allowed_keys:
             if key == "max_agent_rounds":
@@ -362,9 +363,62 @@ async def update_config(config: dict):
     return {"ok": True, "data": {**_runtime_config}}
 
 
+# ── 自定义模型管理 ──────────────────────────────────
+
+
+@router.get("/models/custom")
+async def get_custom_models():
+    """获取所有自定义模型配置（返回时不暴露 API Key）."""
+    models = _runtime_config.get("custom_models", {})
+    # 脱敏返回 API Key
+    safe = {}
+    for mid, m in models.items():
+        safe[mid] = {k: v for k, v in m.items() if k != "api_key"}
+        if m.get("api_key"):
+            key = m["api_key"]
+            safe[mid]["api_key_masked"] = key[:6] + "****" + key[-4:] if len(key) > 12 else "****"
+    return {"ok": True, "data": safe}
+
+
+@router.post("/models/custom")
+async def add_custom_model(body: dict):
+    """添加自定义模型。
+    body: { "id": "glm-5.1", "label": "GLM-5.1", "api_key": "...", "base_url": "...", "description": "..." }
+    """
+    model_id = body.get("id", "").strip()
+    if not model_id:
+        raise HTTPException(status_code=400, detail={"ok": False, "error": "model id is required"})
+    models = _runtime_config.setdefault("custom_models", {})
+    models[model_id] = {
+        "label": body.get("label", model_id),
+        "api_key": body.get("api_key", ""),
+        "base_url": body.get("base_url", "").rstrip("/"),
+        "description": body.get("description", ""),
+    }
+    _save_runtime_config()
+    return {"ok": True, "data": {"id": model_id, **models[model_id]}}
+
+
+@router.delete("/models/custom/{model_id}")
+async def delete_custom_model(model_id: str):
+    """删除自定义模型."""
+    models = _runtime_config.get("custom_models", {})
+    if model_id in models:
+        del models[model_id]
+        _save_runtime_config()
+    return {"ok": True, "data": {"deleted": model_id}}
+
+
 # 提供一个同步读取配置的函数，供其他模块使用
 def get_config_value(key: str, default=None):
     return _runtime_config.get(key, default)
+
+
+# 提供一个获取自定义模型配置的函数，供 chat_routes 使用
+def get_custom_model_config(model_id: str) -> dict | None:
+    """返回自定义模型的 {api_key, base_url, label}，不存在返回 None."""
+    models = _runtime_config.get("custom_models", {})
+    return models.get(model_id)
 
 
 # ════════════════════════════════════════════════════════

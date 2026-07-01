@@ -897,7 +897,7 @@ def _record_tool_history(session_id: str, tool_name: str, tool_args: dict,
         """, (
             session_id, user_id, tool_name,
             json.dumps(tool_args, ensure_ascii=False)[:200],
-            tool_result_summary[:500], 1 if success else 0,
+            tool_result_summary, 1 if success else 0,
             user_message[:200],
         ))
         db.commit()
@@ -2100,7 +2100,7 @@ def _record_scan_execution(session_id: str, tool_name: str, target: str, paramet
         """, (
             session_id, target, tool_name, tool_version,
             json.dumps(parameters, ensure_ascii=False),
-            result_summary[:500],
+            result_summary,
             open_ports_count, findings_count, user_id,
         ))
         db.commit()

@@ -515,7 +515,7 @@ async def _execute_subtask(subtask: dict, user_message: str, session_id: str, us
     except Exception as e:
         content = f"⚠️ 子任务执行失败: {str(e)[:200]}"
 
-    return f"## 子任务 {subtask['id']}: {subtask['name']}\n\n{content.strip()[:2000]}"
+    return f"## 子任务 {subtask['id']}: {subtask['name']}\n\n{content.strip()}"
 
 
 # 子任务工具调用最大轮次
@@ -716,7 +716,7 @@ async def _run_subtasks_concurrent(subtasks: list[dict], original_message: str, 
                 "target": "本机 (127.0.0.1)",
                 "scan_time": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
                 "tool_used": "Nmap (port_scan) + Nuclei (vuln_scan)",
-                "tool_results": all_results[:500],
+                "tool_results": all_results,
                 "vulnerabilities": ["CVE-2026-48558 - SimpleHelp 认证绕过RCE（影响版本 < 5.5.8）"] if "未发现" not in all_results else [],
                 "actions": [
                     "升级 SimpleHelp 至 5.5.8 或以上版本",

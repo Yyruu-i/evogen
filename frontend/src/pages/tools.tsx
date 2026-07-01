@@ -48,6 +48,11 @@ const CATEGORY_LABELS_CN: Record<string, string> = {
 const TOOL_NAME_CN: Record<string, string> = {
   'web_search': '网页搜索',
   'browser': '浏览器',
+  'port_scan': '端口扫描 (nmap)',
+  'vuln_scan': '漏洞扫描 (Nuclei)',
+  'rkhunter_scan': 'Rootkit 检测 (rkhunter)',
+  'chkrootkit_scan': 'Rootkit 检测 (chkrootkit)',
+  'clamav_scan': '病毒扫描 (ClamAV)',
 };
 
 function categoryLabel(cat: string): string {

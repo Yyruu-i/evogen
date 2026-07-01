@@ -769,6 +769,33 @@ def _build_builtin_tools() -> list[dict]:
             "scope": "builtin",
             "created_at": "2025-01-01T00:00:00+00:00",
         })
+
+    # ── 补充安全工具（chat_routes.ALL_TOOLS 中的安全检测工具）──
+    security_tools = [
+        ("port_scan", "端口扫描 (nmap)", "扫描目标 IP/域名的开放端口、服务版本、操作系统指纹", "安全检测",
+         {"target": "string", "ports": "string (可选)", "arguments": "string (可选)"}),
+        ("vuln_scan", "漏洞扫描 (Nuclei)", "使用 ProjectDiscovery Nuclei 对目标进行多模板漏洞检测", "安全检测",
+         {"target": "string", "severity": "string (可选)", "templates": "string (可选)"}),
+        ("rkhunter_scan", "Rootkit 检测 (rkhunter)", "检查系统后门、隐藏文件、异常内核模块", "安全检测",
+         {"check_all": "boolean (可选)"}),
+        ("chkrootkit_scan", "Rootkit 检测 (chkrootkit)", "本地检查已知 Rootkit 特征、隐藏进程/端口/内核模块", "安全检测",
+         {"quick": "boolean (可选)"}),
+        ("clamav_scan", "病毒/恶意软件扫描 (ClamAV)", "扫描指定目录或文件中的病毒、木马、恶意代码", "安全检测",
+         {"target": "string (可选)", "recursive": "boolean (可选)"}),
+    ]
+    for name, label, desc, cat, params in security_tools:
+        result.append({
+            "id": f"security_{name}",
+            "name": name,
+            "label": label,
+            "description": desc,
+            "endpoint": f"/api/v1/agent/{name}",
+            "category": cat,
+            "parameters": params,
+            "scope": "builtin",
+            "created_at": "2025-01-01T00:00:00+00:00",
+        })
+
     return result
 
 

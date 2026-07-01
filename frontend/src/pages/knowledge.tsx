@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { BookOpen, Search, Upload, FileText, Trash2, Loader2, X } from 'lucide-react';
+import { BookOpen, Search, Upload, FileText, Trash2, Loader2, X, CheckSquare, Square } from 'lucide-react';
 
 // ── API helpers ────────────────────────────────────────────────
 
@@ -55,6 +55,11 @@ export function KnowledgePage() {
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Batch select state
+  const [batchMode, setBatchMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [batchDeleting, setBatchDeleting] = useState(false);
+
   const toggleExpand = (id: string) => {
     setExpandedIds(prev => {
       const next = new Set(prev);
@@ -101,7 +106,6 @@ export function KnowledgePage() {
     setUploading(true);
     setError('');
     try {
-      // Use the new upload-file endpoint that handles PDF/DOCX parsing
       const token = getToken();
       const formData = new FormData();
       formData.append('file', file);
@@ -122,6 +126,45 @@ export function KnowledgePage() {
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
+
+  // ── Batch handlers ───────────────────────────────────────
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const handleSelectAll = () => {
+    const ids = displayEntries.map(e => e.id);
+    if (selectedIds.size === ids.length && ids.length > 0) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(ids));
+    }
+  };
+
+  const exitBatchMode = () => {
+    setBatchMode(false);
+    setSelectedIds(new Set());
+  };
+
+  const handleBatchDelete = async () => {
+    if (selectedIds.size === 0) { alert('请先选择要删除的条目'); return; }
+    setBatchDeleting(true);
+    try {
+      await apiPost('/knowledge/batch/delete', { ids: [...selectedIds] });
+      exitBatchMode();
+      setEntries(prev => prev.filter(e => !selectedIds.has(e.id)));
+    } catch (e: any) {
+      alert('批量删除失败: ' + (e.message || '未知错误'));
+    }
+    setBatchDeleting(false);
+  };
+
+  // ── Single delete ────────────────────────────────────────
 
   const handleDelete = async (id: string) => {
     try {
@@ -169,38 +212,74 @@ export function KnowledgePage() {
               }}
             />
           </div>
-          <button
-            className="h-9 px-4 text-[12px] font-medium rounded-lg flex items-center gap-1.5"
-            style={{
-              background: 'rgba(184,192,255,0.08)',
-              color: 'var(--color-holo)',
-              border: '1px solid var(--color-border-glass)',
-            }}
-            onClick={handleSearch}
-            disabled={searching}
-          >
-            {searching ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Search className="w-3.5 h-3.5" />}
-            搜索
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".txt,.md,.pdf,.docx,.csv,.json"
-            className="hidden"
-            onChange={handleUpload}
-          />
-          <button
-            className="h-9 px-4 text-[12px] font-medium rounded-lg flex items-center gap-1.5"
-            style={{
-              background: 'linear-gradient(135deg, var(--color-accent), var(--color-coral))',
-              color: '#fff',
-            }}
-            onClick={() => fileInputRef.current?.click()}
-            disabled={uploading}
-          >
-            {uploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
-            {uploading ? '上传中...' : '上传文档'}
-          </button>
+
+          {batchMode ? (
+            <div className="flex items-center gap-2">
+              <span className="text-[12px] text-muted">已选 {selectedIds.size}/{displayEntries.length}</span>
+              <button className="btn-ghost h-7 text-[12px]" onClick={handleSelectAll}>
+                {selectedIds.size === displayEntries.length && displayEntries.length > 0
+                  ? <Square className="w-3.5 h-3.5" />
+                  : <CheckSquare className="w-3.5 h-3.5" />
+                }
+                {selectedIds.size === displayEntries.length && displayEntries.length > 0 ? '取消全选' : '全选'}
+              </button>
+              <button
+                className="btn-primary h-7 text-[12px]"
+                onClick={handleBatchDelete}
+                disabled={selectedIds.size === 0 || batchDeleting}
+                style={{ background: 'var(--color-danger)', color: '#fff' }}
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                {batchDeleting ? '删除中...' : '批量删除'}
+              </button>
+              <button className="btn-ghost h-7 text-[12px]" onClick={exitBatchMode}>
+                <X className="w-3.5 h-3.5" />
+                取消
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              <button
+                className="h-9 px-4 text-[12px] font-medium rounded-lg flex items-center gap-1.5"
+                style={{
+                  background: 'rgba(184,192,255,0.08)',
+                  color: 'var(--color-holo)',
+                  border: '1px solid var(--color-border-glass)',
+                }}
+                onClick={handleSearch}
+                disabled={searching}
+              >
+                {searching ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Search className="w-3.5 h-3.5" />}
+                搜索
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".txt,.md,.pdf,.docx,.csv,.json"
+                className="hidden"
+                onChange={handleUpload}
+              />
+              <button
+                className="h-9 px-4 text-[12px] font-medium rounded-lg flex items-center gap-1.5"
+                style={{
+                  background: 'linear-gradient(135deg, var(--color-accent), var(--color-coral))',
+                  color: '#fff',
+                }}
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploading}
+              >
+                {uploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
+                {uploading ? '上传中...' : '上传文档'}
+              </button>
+              <button
+                className="btn-ghost h-7 text-[12px]"
+                onClick={() => setBatchMode(true)}
+              >
+                <CheckSquare className="w-3.5 h-3.5" />
+                批量操作
+              </button>
+            </div>
+          )}
         </div>
 
         {error && (
@@ -252,6 +331,16 @@ export function KnowledgePage() {
                 }}
               >
                 <div className="flex items-start justify-between gap-3">
+                  {batchMode && (
+                    <div className="flex-shrink-0 pt-0.5">
+                      <input
+                        type="checkbox"
+                        className="w-4 h-4 cursor-pointer"
+                        checked={selectedIds.has(entry.id)}
+                        onChange={() => toggleSelect(entry.id)}
+                      />
+                    </div>
+                  )}
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1">
                       <FileText className="w-4 h-4 flex-shrink-0" style={{ color: 'var(--color-text-muted)' }} />

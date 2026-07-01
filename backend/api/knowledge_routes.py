@@ -144,6 +144,33 @@ async def delete_knowledge(req: DeleteRequest, user_id: str = Depends(get_curren
     return {"ok": True}
 
 
+class BatchDeleteRequest(BaseModel):
+    ids: list[str]
+
+
+@router.post("/batch/delete")
+async def batch_delete_knowledge(req: BatchDeleteRequest, user_id: str = Depends(get_current_user)):
+    """批量删除知识库条目（仅限自己的）。"""
+    _ensure_table()
+    from backend.db.connection import get_db
+    db = get_db()
+    ids = req.ids
+    if not ids:
+        return {"ok": True, "deleted": 0}
+    # 用 IN 查自己的条目，只删归属于自己的
+    placeholders = ",".join("?" for _ in ids)
+    rows = db.execute(f"""
+        SELECT id, user_id FROM {_KNOWLEDGE_TABLE}
+        WHERE id IN ({placeholders})
+    """, ids).fetchall()
+    own_ids = [r["id"] for r in rows if r["user_id"] == user_id]
+    if own_ids:
+        own_placeholders = ",".join("?" for _ in own_ids)
+        db.execute(f"DELETE FROM {_KNOWLEDGE_TABLE} WHERE id IN ({own_placeholders})", own_ids)
+        db.commit()
+    return {"ok": True, "deleted": len(own_ids)}
+
+
 def _extract_text_from_file(filename: str, raw: bytes) -> str:
     """根据文件类型提取文本内容."""
     ext = os.path.splitext(filename)[1].lower()

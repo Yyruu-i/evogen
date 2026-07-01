@@ -168,6 +168,20 @@ async def delete_tool(name: str, user_id: str = Depends(get_current_user)):
     return {"ok": True}
 
 
+@router.post("/batch/delete")
+async def batch_delete_tools(req: dict, user_id: str = Depends(get_current_user)):
+    """批量删除工具."""
+    names = req.get("names", [])
+    if not names:
+        return {"ok": True, "deleted": 0}
+    user_tools = _custom_tools.get(user_id, [])
+    before = len(user_tools)
+    user_tools[:] = [t for t in user_tools if t["name"] not in names]
+    for name in names:
+        _tool_counts.pop(name, None)
+    return {"ok": True, "deleted": before - len(user_tools)}
+
+
 # ── 智能更新能力（工具仓库版本管理）──
 
 _TOOLS_REPO_FILE = os.path.join(

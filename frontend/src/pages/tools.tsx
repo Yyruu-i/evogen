@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Zap, Plus, Trash2, Search, Terminal, Pencil, X } from 'lucide-react';
+import { Zap, Plus, Trash2, Search, Terminal, Pencil, X, CheckSquare, Square, FileDown } from 'lucide-react';
 import { Badge } from '@/components/shared/badge';
 import { ListSkeleton } from '@/components/shared/skeleton';
 import { EmptyState } from '@/components/shared/empty-state';
@@ -113,6 +113,11 @@ export function ToolsPage() {
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState('');
 
+  // Batch select state
+  const [batchMode, setBatchMode] = useState(false);
+  const [selectedNames, setSelectedNames] = useState<Set<string>>(new Set());
+  const [batchDeleting, setBatchDeleting] = useState(false);
+
   // ── Fetch tools ──────────────────────────────────────────
 
   const fetchTools = useCallback(async () => {
@@ -132,12 +137,54 @@ export function ToolsPage() {
   // ── Derived data ─────────────────────────────────────────
 
   const categories = [...new Set(tools.map(t => t.category).filter(Boolean))].sort();
+  const userTools = tools.filter(t => t.scope === 'user');
 
   const filtered = tools.filter(t => {
     if (search && !t.name.includes(search) && !t.description.includes(search)) return false;
     if (selectedCategory && t.category !== selectedCategory) return false;
     return true;
   });
+
+  // ── Batch handlers ───────────────────────────────────────
+
+  const exitBatchMode = () => {
+    setBatchMode(false);
+    setSelectedNames(new Set());
+  };
+
+  const toggleSelect = (name: string) => {
+    setSelectedNames(prev => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name); else next.add(name);
+      return next;
+    });
+  };
+
+  const handleSelectAll = () => {
+    const userNames = userTools.map(t => t.name);
+    if (selectedNames.size === userTools.length && userTools.length > 0) {
+      setSelectedNames(new Set());
+    } else {
+      setSelectedNames(new Set(userNames));
+    }
+  };
+
+  const handleBatchDelete = async () => {
+    if (selectedNames.size === 0) { alert('请先选择要删除的工具'); return; }
+    setBatchDeleting(true);
+    try {
+      await apiRequest('/tools/batch/delete', {
+        method: 'POST',
+        body: JSON.stringify({ names: [...selectedNames] }),
+      });
+      exitBatchMode();
+      setLoading(true);
+      await fetchTools();
+    } catch (e: any) {
+      alert('批量删除失败: ' + (e.message || '未知错误'));
+    }
+    setBatchDeleting(false);
+  };
 
   // ── Form handlers ────────────────────────────────────────
 
@@ -167,7 +214,6 @@ export function ToolsPage() {
     setFormError('');
     if (!form.name.trim()) { setFormError('工具名称为必填项'); return; }
 
-    // Parse params JSON if provided
     let parameters: Record<string, string> = {};
     if (form.paramsJson.trim()) {
       try {
@@ -262,10 +308,43 @@ export function ToolsPage() {
               <option key={cat} value={cat}>{categoryLabel(cat)}</option>
             ))}
           </select>
-          <button className="btn-primary h-8 text-[12px]" onClick={openAdd}>
-            <Plus className="w-3.5 h-3.5" />
-            添加工具
-          </button>
+
+          {batchMode ? (
+            <div className="flex items-center gap-2">
+              <span className="text-[12px] text-muted">已选 {selectedNames.size}/{userTools.length}</span>
+              <button className="btn-ghost h-7 text-[12px]" onClick={handleSelectAll}>
+                {selectedNames.size === userTools.length && userTools.length > 0
+                  ? <Square className="w-3.5 h-3.5" />
+                  : <CheckSquare className="w-3.5 h-3.5" />
+                }
+                {selectedNames.size === userTools.length && userTools.length > 0 ? '取消全选' : '全选'}
+              </button>
+              <button
+                className="btn-primary h-7 text-[12px] text-danger"
+                onClick={handleBatchDelete}
+                disabled={selectedNames.size === 0 || batchDeleting}
+                style={{ background: 'var(--color-danger)', color: '#fff' }}
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                {batchDeleting ? '删除中...' : '批量删除'}
+              </button>
+              <button className="btn-ghost h-7 text-[12px]" onClick={exitBatchMode}>
+                <X className="w-3.5 h-3.5" />
+                取消
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              <button className="btn-ghost h-7 text-[12px]" onClick={() => setBatchMode(true)}>
+                <CheckSquare className="w-3.5 h-3.5" />
+                批量操作
+              </button>
+              <button className="btn-primary h-8 text-[12px]" onClick={openAdd}>
+                <Plus className="w-3.5 h-3.5" />
+                添加工具
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Stats */}
@@ -275,64 +354,6 @@ export function ToolsPage() {
           <span>{tools.filter(t => t.scope === 'builtin').length} 个内置</span>
           <span>·</span>
           <span>{tools.filter(t => t.scope === 'user').length} 个自定义</span>
-        </div>
-
-        {/* Batch Update */}
-        <div
-          className="rounded-xl p-3 mb-4 flex items-center justify-between"
-          style={{
-            background: 'rgba(184,192,255,0.04)',
-            border: '1px solid rgba(184,192,255,0.08)',
-          }}
-        >
-          <div className="flex items-center gap-2">
-            <div className="w-6 h-6 rounded flex items-center justify-center" style={{ background: 'rgba(184,192,255,0.08)' }}>
-              <Terminal className="w-3.5 h-3.5" style={{ color: 'var(--color-holo)' }} />
-            </div>
-            <span className="text-[12px]" style={{ color: 'var(--color-text-secondary)' }}>智能更新</span>
-            <span className="text-[10px] text-muted">检测并批量升级工具/技能/知识库</span>
-          </div>
-          <div className="flex gap-1.5">
-            <button
-              className="flex items-center gap-1 px-3 py-1.5 text-[11px] font-medium rounded-lg transition-all hover:opacity-80"
-              style={{
-                background: 'rgba(184,192,255,0.08)',
-                color: 'var(--color-holo)',
-              }}
-              onClick={async () => {
-                try {
-                  const data = await apiRequest<{ ok: boolean; data: { message: string; before: string; after: string; changelog: string[] } }>('/tools/repo/status');
-                  alert(`📋 工具仓库状态\n版本: ${data.version || '未知'}\n工具数: ${data.tool_count || '未知'}\n最后更新: ${data.last_update || '未知'}`);
-                } catch (e: any) {
-                  alert(`检查失败: ${e.message}`);
-                }
-              }}
-            >
-              检查状态
-            </button>
-            <button
-              className="flex items-center gap-1 px-3 py-1.5 text-[11px] font-medium rounded-lg transition-all hover:opacity-80"
-              style={{
-                background: 'rgba(0,255,136,0.08)',
-                color: 'var(--color-mint)',
-              }}
-              onClick={async () => {
-                try {
-                  const data = await apiRequest<{ message: string; updated: boolean; before: string; after: string; changelog: string[] }>('/tools/update', { method: 'POST', body: JSON.stringify({ version: 'latest' }) });
-                  if (data.updated) {
-                    alert(`✅ 更新完成\n${data.message}\n${data.before} → ${data.after}\n\n变更:\n${(data.changelog || []).join('\n')}`);
-                  } else {
-                    alert(`ℹ️ ${data.message}`);
-                  }
-                  fetchTools();
-                } catch (e: any) {
-                  alert(`❌ 更新失败: ${e.message}`);
-                }
-              }}
-            >
-              执行更新
-            </button>
-          </div>
         </div>
 
         {/* Error */}
@@ -437,6 +458,7 @@ export function ToolsPage() {
             <table className="w-full">
               <thead>
                 <tr>
+                  {batchMode && <th style={{ width: 32 }}></th>}
                   <th>工具名称</th>
                   <th>分类</th>
                   <th>端点</th>
@@ -447,6 +469,18 @@ export function ToolsPage() {
               <tbody>
                 {filtered.map(tool => (
                   <tr key={tool.id} className="border-b border-color/30 hover:bg-hover/30 transition-colors">
+                    {batchMode && (
+                      <td className="text-center">
+                        {tool.scope === 'user' ? (
+                          <input
+                            type="checkbox"
+                            className="w-4 h-4 cursor-pointer"
+                            checked={selectedNames.has(tool.name)}
+                            onChange={() => toggleSelect(tool.name)}
+                          />
+                        ) : null}
+                      </td>
+                    )}
                     <td>
                       <div>
                         <span className="text-[13px] font-medium">{toolNameLabel(tool.name)}</span>

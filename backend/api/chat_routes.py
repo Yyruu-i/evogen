@@ -654,6 +654,98 @@ def _save_message(session_id: str, role: str, content: str):
     db.commit()
 
 
+# ── 工具调用历史记录（用于智能推荐和历史学习） ──
+
+TOOL_HISTORY_TABLE = "tool_history"
+
+
+def _ensure_tool_history_table():
+    """确保 tool_history 表存在。"""
+    try:
+        from backend.db.connection import get_db
+        db = get_db()
+        db.execute(f"""
+            CREATE TABLE IF NOT EXISTS {TOOL_HISTORY_TABLE} (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                user_id TEXT NOT NULL DEFAULT 'default',
+                tool_name TEXT NOT NULL,
+                tool_args TEXT DEFAULT '{{}}',
+                tool_result_summary TEXT DEFAULT '',
+                success INTEGER DEFAULT 1,
+                user_message TEXT DEFAULT '',
+                created_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        db.execute(f"""
+            CREATE INDEX IF NOT EXISTS idx_tool_history_user
+            ON {TOOL_HISTORY_TABLE}(user_id, tool_name)
+        """)
+        db.commit()
+    except Exception as e:
+        logger.warning(f"Failed to ensure tool_history table: {e}")
+
+
+def _record_tool_history(session_id: str, tool_name: str, tool_args: dict,
+                         tool_result_summary: str, success: bool,
+                         user_message: str, user_id: str = "default"):
+    """记录一次工具调用历史。"""
+    try:
+        _ensure_tool_history_table()
+        from backend.db.connection import get_db
+        db = get_db()
+        db.execute(f"""
+            INSERT INTO {TOOL_HISTORY_TABLE}
+                (session_id, user_id, tool_name, tool_args, tool_result_summary,
+                 success, user_message)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            session_id, user_id, tool_name,
+            json.dumps(tool_args, ensure_ascii=False)[:200],
+            tool_result_summary[:500], 1 if success else 0,
+            user_message[:200],
+        ))
+        db.commit()
+    except Exception as e:
+        logger.warning(f"Failed to record tool history: {e}")
+
+
+def _get_tool_history(user_id: str = "default", limit: int = 20) -> list[dict]:
+    """获取用户最近的工具调用历史。"""
+    try:
+        _ensure_tool_history_table()
+        from backend.db.connection import get_db
+        db = get_db()
+        rows = db.execute(f"""
+            SELECT * FROM {TOOL_HISTORY_TABLE}
+            WHERE user_id = ?
+            ORDER BY id DESC LIMIT ?
+        """, (user_id, limit)).fetchall()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        logger.warning(f"Failed to get tool history: {e}")
+        return []
+
+
+def _get_most_used_tools(user_id: str = "default", limit: int = 5) -> list[dict]:
+    """统计用户最常使用的工具（按调用次数）。"""
+    try:
+        _ensure_tool_history_table()
+        from backend.db.connection import get_db
+        db = get_db()
+        rows = db.execute(f"""
+            SELECT tool_name, COUNT(*) as count, SUM(success) as success_count
+            FROM {TOOL_HISTORY_TABLE}
+            WHERE user_id = ?
+            GROUP BY tool_name
+            ORDER BY count DESC LIMIT ?
+        """, (user_id, limit)).fetchall()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        logger.warning(f"Failed to get most used tools: {e}")
+        return []
+
+
 async def _build_system_prompt(session_id: str, user_message: str, user_id: str) -> str:
     """构建完整的 system prompt，注入人格 + 记忆上下文."""
     parts: list[str] = []
@@ -1478,6 +1570,17 @@ async def _tool_loop_stream_generator(
                         tool_args, tool_result, user_id=user_id,
                     ))
 
+                # 记录工具调用历史（用于智能推荐和历史学习）
+                _record_tool_history(
+                    session_id=session_id,
+                    tool_name=tool_name,
+                    tool_args=tool_args,
+                    tool_result_summary=tool_result[:200],
+                    success=not is_failure,
+                    user_message=original_message[:100],
+                    user_id=user_id,
+                )
+
                 # 将工具调用和结果追加到 messages
                 llm_messages.append({
                     "role": "assistant",
@@ -1546,62 +1649,132 @@ async def _tool_loop_stream_generator(
                            f"({quality['passed_checks']}/{quality['total_checks']})")
                 if not quality["pass"]:
                     logger.warning(f"Report quality issues: {quality['issues']}")
+                    # 将校验问题追加到报告
+                    issues_text = "\n".join(f"- {i}" for i in quality['issues'])
+                    quality_note = f"\n\n---\n\n> **⚠️ 数据质量校验提醒**\n> {issues_text}\n> *检查通过率: {quality['passed_checks']}/{quality['total_checks']}*"
+                    report += quality_note
+                    if full_text_response:
+                        full_text_response += quality_note
+                        _save_message(session_id, "assistant", full_text_response[len(full_text_response) - len(quality_note):])
         except Exception as e:
             logger.warning(f"Report generation failed: {e}")
 
 
-def _recommend_tools(query: str) -> str:
-    """基于消息内容做语义匹配，推荐最适配的工具。
+def _recommend_tools(query: str, user_id: str = "default") -> str:
+    """基于消息内容做语义匹配 + 历史学习，推荐最适配的工具。
 
-    使用关键词匹配（简单但有效的语义推荐），返回推荐文本。
+    使用关键词匹配 + 用户历史使用统计，返回推荐文本。
     """
     recommendations = []
 
-    # 安全扫描关键词
+    # ── 维度1：用户历史偏好（基于 tool_history 统计） ──
+    try:
+        most_used = _get_most_used_tools(user_id=user_id, limit=3)
+        if most_used:
+            history_lines = []
+            for t in most_used:
+                name = t["tool_name"]
+                count = t["count"]
+                success_count = t["success_count"]
+                history_lines.append(
+                    f"  - `{name}` (调用 {count} 次, 成功率 {success_count}/{count})"
+                )
+            recommendations.append(
+                "📊 **基于您历史使用习惯推荐（历史学习）：**\n"
+                + "\n".join(history_lines)
+            )
+    except Exception:
+        pass
+
+    # ── 维度2：语义关键词匹配 ──
+    q = query.lower()
+
+    # Rootkit 检测
+    rootkit_keywords = ["rootkit", "后门", "内核模块", "隐藏进程", "木马", "恶意软件",
+                        "入侵检测", "主机安全", "系统完整性", "可疑进程", "异常进程"]
+    if any(kw in q for kw in rootkit_keywords):
+        recommendations.append(
+            "- 🧬 **Rootkit 检测** (`rkhunter_scan`): 检查系统后门和隐藏文件\n"
+            "- 🔄 **chkrootkit 扫描** (`chkrootkit_scan`): 互补检测 Rootkit 特征"
+        )
+
+    # 病毒/恶意文件检测
+    virus_keywords = ["病毒", "恶意文件", "文件扫描", "clamav", "恶意代码",
+                      "文件检测", "木马文件", "webshell"]
+    if any(kw in q for kw in virus_keywords):
+        recommendations.append(
+            "- 🦠 **病毒扫描** (`clamav_scan`): 使用 ClamAV 扫描病毒/恶意代码"
+        )
+
+    # 安全扫描
     scan_keywords = ["扫描", "端口", "漏洞", "安全检测", "渗透", "nmap", "nuclei",
                      "开放端口", "服务检测", "cve", "入侵", "攻击面", "靶场", "靶机"]
-    if any(kw in query.lower() for kw in scan_keywords):
+    if any(kw in q for kw in scan_keywords):
         recommendations.append(
-            "- 🔍 **端口扫描** (`port_scan`): 检测目标开放端口和服务版本\\n"
-            "- 🛡️ **漏洞扫描** (`vuln_scan`): 使用 Nuclei 检测已知漏洞\\n"
+            "- 🔍 **端口扫描** (`port_scan`): 检测目标开放端口和服务版本\n"
+            "- 🛡️ **漏洞扫描** (`vuln_scan`): 使用 Nuclei 检测已知漏洞\n"
             "- 📖 **漏洞知识库**: 自动检索相关 CVE 漏洞信息"
         )
 
-    # 安全通告关键词 — 触发自动编排链路
+    # 安全通告 — 触发自动编排链路
     advisory_keywords = ["通告", "公告", "安全公告", "cve", "cve-", "漏洞通告",
                          "预警", "紧急", "应急", "补丁", "月份安全公告", "漏洞预警",
                          "安全动态", "威胁情报", "安全通报", "cisa", "nvd",
                          "零日", "0day", "远程代码执行", "rce", "文件包含", "sql注入"]
-    if any(kw in query.lower() for kw in advisory_keywords):
+    if any(kw in q for kw in advisory_keywords):
         recommendations.append(
-            "📢 **检测到安全通告/威胁情报消息**\\n"
-            "  此消息包含安全通告内容，我会自动：\\n"
-            "  1. 分析通告中的漏洞信息和受影响产品\\n"
-            "  2. 根据通告内容选择最合适的检测工具\\n"
-            "  3. 执行检测并收集结果\\n"
-            "  4. 调用报告引擎生成固定模板的检测报告\\n"
+            "📢 **检测到安全通告/威胁情报消息**\n"
+            "  此消息包含安全通告内容，我会自动：\n"
+            "  1. 分析通告中的漏洞信息和受影响产品\n"
+            "  2. 根据通告内容选择最合适的检测工具\n"
+            "  3. 执行检测并收集结果\n"
+            "  4. 调用报告引擎生成固定模板的检测报告\n"
             "  5. 输出完整的**安全通告检测报告**"
         )
 
-    # 网页/浏览器相关
-    browser_keywords = ["打开", "网页", "网站", "浏览器", "截图", "url", "http", "页面"]
-    if any(kw in query.lower() for kw in browser_keywords):
+    # 报告生成
+    report_keywords = ["报告", "模板", "生成报告", "导出", "报表", "汇总表",
+                       "巡检报告", "安全报告"]
+    if any(kw in q for kw in report_keywords):
         recommendations.append(
-            "- 🌐 **浏览器导航** (`browser_navigate`): 打开指定网页\\n"
+            "- 📋 **报告生成** (`/api/v1/report/v2/render`): 使用固定模板生成结构化安全报告"
+        )
+
+    # 知识库
+    kb_keywords = ["知识库", "查询", "搜索知识", "cve查询", "漏洞知识",
+                   "安全规范", "cis", "owasp", "kev", "规范"]
+    if any(kw in q for kw in kb_keywords):
+        recommendations.append(
+            "- 📚 **知识库搜索**: 自动检索安全规范、漏洞信息、CVE 知识"
+        )
+
+    # 统计看板
+    stats_keywords = ["统计", "看板", "仪表盘", "概览", "全局", "总览",
+                      "使用情况", "工具排行", "历史记录"]
+    if any(kw in q for kw in stats_keywords):
+        recommendations.append(
+            "- 📊 **全局统计看板** (`/stats`): 查看工具使用排行、扫描统计、会话概览"
+        )
+
+    # 浏览器/网页
+    browser_keywords = ["打开", "网页", "网站", "浏览器", "截图", "url", "http", "页面"]
+    if any(kw in q for kw in browser_keywords):
+        recommendations.append(
+            "- 🌐 **浏览器导航** (`browser_navigate`): 打开指定网页\n"
             "- 📸 **截图** (`browser_screenshot`): 截取当前页面"
         )
 
-    # 搜索相关
+    # 联网搜索
     search_keywords = ["搜索", "查找", "查询", "资料", "信息", "找"]
-    if any(kw in query.lower() for kw in search_keywords):
+    if any(kw in q for kw in search_keywords):
         recommendations.append(
             "- 🔎 **联网搜索**: Agent 将自动搜索互联网获取最新信息"
         )
 
-    # 如果没有任何匹配，给出通用推荐
+    # ── 如果没有任何匹配，给出通用推荐 ──
     if not recommendations:
         recommendations.append(
-            "- 💬 **直接对话**: 我可以直接回答您的问题\\n"
+            "- 💬 **直接对话**: 我可以直接回答您的问题\n"
             "- 🔧 需要安全扫描或浏览器操作时，我会自动调用相应工具"
         )
 
@@ -2011,27 +2184,74 @@ def _generate_security_report(session_data: dict, session_id: str, user_id: str 
 
 
 def _validate_report_quality(report: str) -> dict:
-    """校验报告质量：完整性、格式、数值."""
+    """校验报告质量：完整性、格式一致性、数据合理性、非空性."""
     issues = []
+    import re
+
+    # ── 完整性校验 ──
     checks = {
         "has_title": "安全扫描报告" in report,
         "has_target": "{{TARGET}}" not in report and "扫描目标" in report,
         "has_port_table": "| 端口 |" in report,
-        "has_vuln_section": "## 2. 漏洞扫描结果" in report,
-        "has_risk_analysis": "## 3. 风险分析与建议" in report,
-        "has_recommendations": "### 建议措施" in report,
-        "has_cve_knowledge": "## 4. 相关漏洞知识" in report,
+        "has_vuln_section": "漏洞扫描结果" in report,
+        "has_risk_analysis": "风险分析" in report or "分析与建议" in report,
+        "has_recommendations": "建议措施" in report or "建议" in report[-1000:],
+        "has_timestamp": bool(re.search(r"\d{4}-\d{2}-\d{2}", report[:500])),
         "no_unfilled_template": "{{" not in report,
     }
+
+    # ── 一致性校验（各节之间的数据不矛盾） ──
+
+    # 提取严重级别汇总
+    critical_match = re.search(r"CRITICAL[：:]\s*(\d+)", report)
+    high_match = re.search(r"HIGH[：:]\s*(\d+)", report)
+    medium_match = re.search(r"MEDIUM[：:]\s*(\d+)", report)
+    low_match = re.search(r"LOW[：:]\s*(\d+)", report)
+    total_vuln_line = re.search(r"发现[共]?\s*(\d+)\s*个漏洞", report)
+
+    total_severity = 0
+    sev_present = False
+    for m in [critical_match, high_match, medium_match, low_match]:
+        if m:
+            total_severity += int(m.group(1))
+            sev_present = True
+
+    # 1. 所有数量为0（可能未正确填充）
+    all_nums = re.findall(r"\|\s*(\d+)\s*\|", report)
+    if all_nums and all(int(n) == 0 for n in all_nums):
+        issues.append("⚠️ 所有风险级别数量为 0，可能数据未正确填充")
+
+    # 2. 严重级别汇总与总结行矛盾
+    if sev_present and total_vuln_line:
+        reported_total = int(total_vuln_line.group(1))
+        if total_severity == 0 and reported_total > 0:
+            issues.append(f"严重级别汇总为 0 但声称发现 {reported_total} 个漏洞（数据矛盾）")
+        if total_severity > 0 and reported_total == 0:
+            issues.append(f"发现 {total_severity} 个漏洞但总结为 0（数据矛盾）")
+
+    # 3. 端口数量合理性
+    port_lines = re.findall(r"\|\s*(\d{1,5})\s*\|\s*(tcp|udp)\s*\|", report, re.IGNORECASE)
+    if len(port_lines) > 100:
+        issues.append(f"开放端口过多 ({len(port_lines)} 个)，请确认合理性")
+    elif len(port_lines) == 0 and "开放端口" in report and "| 端口 |" in report:
+        issues.append("未发现开放端口（可能扫描未执行或目标不可达）")
+
+    # 4. 扫描时间非空
+    scan_time_match = re.search(r"扫描时间[：:]\s*(\S+)\s", report)
+    if scan_time_match:
+        st = scan_time_match.group(1)
+        if st in ("N/A", "未知", ""):
+            issues.append("扫描时间未正确填充")
+
+    # 5. 建议项存在性
+    rec_items = re.findall(r"^\d+[\.、] |^- ", report, re.MULTILINE)
+    if "建议" in report[-500:] and len(rec_items) == 0:
+        issues.append("建议章节无具体建议项")
+
+    # ── 综合结果 ──
     for check, passed in checks.items():
         if not passed:
             issues.append(f"缺失: {check}")
-
-    # 数值校验
-    import re
-    all_nums = re.findall(r"\|\s*(\d+)\s*\|", report)
-    if all_nums and all(g == "0" for g in all_nums):
-        issues.append("警告: 所有风险级别数量为0，可能数据未正确填充")
 
     return {
         "pass": len(issues) == 0,
@@ -2193,7 +2413,7 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
 
     # ── 工具语义推荐（基于消息内容推荐最适配工具）──
     try:
-        tool_recommendations = _recommend_tools(message)
+        tool_recommendations = _recommend_tools(message, user_id=user_id)
         if tool_recommendations:
             system_prompt += "\n\n## 🤖 推荐工具\n根据您的问题，以下工具可能有用：\n" + tool_recommendations
     except Exception as e:

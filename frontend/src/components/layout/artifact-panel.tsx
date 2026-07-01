@@ -132,8 +132,8 @@ export function ArtifactPanel() {
     setSavingToKnowledge(artifact.id);
     try {
       const res = await artifactsApi.toKnowledge(artifact.id);
-      if (res?.data?.knowledge_id) {
-        alert(`✅ 已存入知识库\n来源: ${res.data.source}`);
+      if (res?.knowledge_id) {
+        alert(`✅ 已存入知识库\n来源: ${res.source}`);
       }
     } catch (err) {
       console.error('Failed to save to knowledge:', err);

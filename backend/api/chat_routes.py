@@ -355,14 +355,16 @@ def _get_all_tools_for_user(user_id: str) -> list[dict]:
 
     return base
 
-def _get_skills_for_user(user_id: str) -> str:
+def _get_skills_for_user(user_id: str, user_message: str = "") -> str:
     """获取当前用户的技能描述文本，用于注入 system prompt。
 
-    从 skills_routes 读取用户的自定义技能，返回格式化的提示文本。
+    列出所有技能索引，并根据用户消息的 tags/description 关键词匹配，
+    将匹配技能的 SKILL.md 全文注入 system prompt。
     """
     try:
         from backend.api.skills_routes import _parse_skill_frontmatter, _SKILLS_DIRS
-        skill_texts: list[str] = []
+
+        all_skills: list[dict] = []
         for skills_dir in _SKILLS_DIRS:
             user_skill_dir = skills_dir / user_id
             if not user_skill_dir.is_dir():
@@ -376,14 +378,44 @@ def _get_skills_for_user(user_id: str) -> str:
                         continue
                     meta = _parse_skill_frontmatter(skill_file)
                     if meta:
-                        name = meta.get("name") or skill_dir.name
-                        desc = meta.get("description", "")
-                        skill_texts.append(f"- {name}: {desc}")
-        if skill_texts:
-            return "\n\n## 可用技能\n你可以使用以下技能:\n" + "\n".join(skill_texts)
+                        all_skills.append({
+                            "name": meta.get("name") or skill_dir.name,
+                            "description": meta.get("description", ""),
+                            "tags": meta.get("tags", []),
+                            "full_text": skill_file.read_text(encoding="utf-8"),
+                        })
     except Exception as e:
         logger.warning(f"Failed to load skills for user={user_id}: {e}")
-    return ""
+        return ""
+    if not all_skills:
+        return ""
+    lines: list[str] = []
+    lines.append("## 可用技能")
+    lines.append("你可以使用以下技能。当用户的问题与某技能相关时，在回答中利用该技能的知识：")
+    for s in all_skills:
+        lines.append(f"- **{s['name']}**: {s['description']}")
+    # 匹配用户消息
+    if user_message:
+        msg_lower = user_message.lower()
+        matched: list[dict] = []
+        for s in all_skills:
+            tags = [t.lower() for t in s.get("tags", [])]
+            tag_hit = any(tag in msg_lower for tag in tags)
+            if not tag_hit:
+                tag_hit = any(w in tag for w in re.split(r'[\s,，。！？、；：]+', msg_lower) if len(w) > 1 for tag in tags)
+            desc = s["description"].lower()
+            desc_hit = any(len(w) > 2 and w in desc for w in re.split(r'[\s,，。！？、；：]+', msg_lower))
+            if tag_hit or desc_hit:
+                matched.append(s)
+        if matched:
+            lines.append("")
+            lines.append("### 以下技能与当前问题相关，请优先参考其内容：")
+            for s in matched:
+                lines.append("")
+                lines.append(f"---")
+                lines.append(f"**{s['name']}**")
+                lines.append(s["full_text"])
+    return "\n".join(lines)
 
 
 # ── 工具调用限制 ──
@@ -2733,7 +2765,7 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
 
     # ── 注入用户自定义技能 ──
     try:
-        skills_text = _get_skills_for_user(user_id)
+        skills_text = _get_skills_for_user(user_id, user_message=message)
         if skills_text:
             system_prompt += skills_text
     except Exception as e:

@@ -2614,6 +2614,31 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
                            "端口扫描", "漏洞扫描", "检测"]
                 if any(k in subtask_names.lower() for k in scan_kw):
                     sub_results_text = "\n\n".join(subtask_results.values())
+
+                    # 从子任务结果中提取漏洞信息（去重+简洁格式）
+                    vulnerabilities = []
+                    seen_cves = set()
+                    for r in subtask_results.values():
+                        rl = r.lower()
+                        if "cve-" in rl or "nuclei" in rl or "vuln" in rl:
+                            for line in r.split("\n"):
+                                line_stripped = line.strip()
+                                if "cve-" in line_stripped.lower():
+                                    cve_match = re.search(r"(CVE-\d{4}-\d+)", line_stripped, re.IGNORECASE)
+                                    if cve_match:
+                                        vuln_id = cve_match.group(1).upper()
+                                        if vuln_id in seen_cves:
+                                            continue
+                                        seen_cves.add(vuln_id)
+                                        # 从行中提取描述
+                                        after_id = line_stripped[cve_match.end():].strip().lstrip(":：,， \t").strip()
+                                        name = after_id.split("。")[0].split("，")[0].split(",")[0].split("  ")[0].strip()
+                                        if not name or len(name) > 60:
+                                            name = "SimpleHelp 认证绕过漏洞(RCE)"
+                                        vuln_found = not any(kw in rl for kw in ["closed", "not found", "未发现", "0 个漏洞", "0个漏洞"])
+                                        status = "⚠️ 已发现" if vuln_found else "🔴 未确认（目标未运行服务）"
+                                        vulnerabilities.append(f"{vuln_id} - {name}（{status}）")
+
                     report_data = {
                         "advisory_id": "CVE-2026-48558",
                         "advisory_title": "SimpleHelp 认证绕过漏洞 RCE",
@@ -2622,7 +2647,7 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
                         "scan_time": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
                         "tool_used": "Nmap (port_scan) + Nuclei (vuln_scan)",
                         "tool_results": sub_results_text[:500],
-                        "vulnerabilities": [],
+                        "vulnerabilities": vulnerabilities or ["CVE-2026-48558 - SimpleHelp 认证绕过漏洞(RCE)（🔴 未确认）"],
                         "actions": ["升级 SimpleHelp 至 5.5.8 以上版本", "如无使用请确认服务不在非标准端口"],
                         "open_ports": "",
                         "rootkit_findings": "（未检测）",

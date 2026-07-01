@@ -249,6 +249,35 @@ ALL_TOOLS: list[dict] = BROWSER_TOOLS + [
             },
         },
     },
+    # ── 报告生成类 ──
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_report",
+            "description": "[模板引擎] 报告生成 — 将扫描/检测结果用模板渲染成结构化报告并存入制品面板",
+            "vendor": "EvoGen",
+            "purpose": "报告生成 / 制品存储",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "template": {
+                        "type": "string",
+                        "description": "模板ID，可选值：vuln-advisory（安全通告检测报告）、port-scan（端口扫描报告）、server-health（服务器健康巡检报告）、code-review（代码审查报告）、network-topology（网络拓扑探测报告）",
+                        "enum": ["vuln-advisory", "port-scan", "server-health", "code-review", "network-topology"],
+                    },
+                    "data": {
+                        "type": "object",
+                        "description": "模板填充数据，根据模板字段传入对应的键值对",
+                    },
+                    "artifact_title": {
+                        "type": "string",
+                        "description": "制品标题（可选，默认自动生成）",
+                    },
+                },
+                "required": ["template", "data"],
+            },
+        },
+    },
 ]
 # ── 自定义工具动态合并 ──
 
@@ -729,68 +758,6 @@ async def _run_subtasks_concurrent(subtasks: list[dict], original_message: str, 
         if r:
             parts.append(r)
 
-    # ── 安全扫描报告自动生成（子任务中包含扫描工具调用时） ──
-    subtask_names = " ".join(s.get("name", "") + " " + s.get("description", "") for s in subtasks)
-    scan_keywords = ["port_scan", "vuln_scan", "nmap", "nuclei", "rkhunter", "chkrootkit", "clamav",
-                     "端口扫描", "漏洞扫描", "rootkit", "病毒", "检测"]
-    if any(kw in subtask_names.lower() for kw in scan_keywords):
-        import logging
-        report_logger = logging.getLogger(__name__)
-        report_logger.info(f"Subtask scan detected! keywords matched in: {subtask_names[:100]}")
-        try:
-            # 从子任务结果中提取关键数据，拼装成报告引擎需要的格式
-            all_results = "\n\n".join(results_text.values())
-            from datetime import datetime, timezone
-            report_data = {
-                "advisory_id": "CVE-2026-48558",
-                "advisory_title": "SimpleHelp 认证绕过漏洞 RCE",
-                "severity": "严重",
-                "target": "本机 (127.0.0.1)",
-                "scan_time": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
-                "tool_used": "Nmap (port_scan) + Nuclei (vuln_scan)",
-                "tool_results": all_results,
-                "vulnerabilities": ["CVE-2026-48558 - SimpleHelp 认证绕过RCE（影响版本 < 5.5.8）"] if "未发现" not in all_results else [],
-                "actions": [
-                    "升级 SimpleHelp 至 5.5.8 或以上版本",
-                    "如不使用 SimpleHelp，确认服务未在非标准端口运行",
-                    "定期进行安全扫描和漏洞排查",
-                ],
-                "open_ports": "",
-                "rootkit_findings": "（未检测）",
-            }
-            # 调用报告引擎
-            import httpx
-            async with httpx.AsyncClient(timeout=30.0, base_url="http://localhost:8100") as client:
-                resp = await client.post(
-                    "/api/v1/report/v2/render",
-                    json={"template": "vuln-advisory", "data": report_data},
-                )
-                if resp.status_code == 200:
-                    report = resp.json().get("data", {})
-                    report_md = report.get("raw_markdown", "")
-                    if report_md:
-                        quality = report.get("complete", True)
-                        passed = report.get("missing_fields")
-                        logger.info(f"Subtask report engine: complete={quality}, missing={passed}")
-                        if not quality and passed:
-                            report_md += f"\n\n> ⚠️ **数据质量校验提醒**\n> 缺失字段: {', '.join(passed)}"
-                        # 作为制品存入数据库（让前端制品面板可见）
-                        try:
-                            from backend.api.artifacts_routes import store_artifact
-                            store_artifact(
-                                "doc",
-                                f"安全报告_{report_data['target']}",
-                                report_md,
-                                session_id=session_id,
-                                user_id=user_id,
-                            )
-                            logger.info("Security report stored as artifact for panel display")
-                        except Exception as artifact_e:
-                            logger.warning(f"Failed to store report artifact: {artifact_e}")
-
-        except Exception as e:
-            logger.warning(f"Subtask security report generation failed: {e}")
-
     return "\n\n---\n\n".join(parts), results_text
 
 
@@ -988,6 +955,28 @@ async def _build_system_prompt(session_id: str, user_message: str, user_id: str)
         "除非用户明确提及，否则不要虚构任何部署环境信息（服务器提供商、域名、IP地址、云服务商等）。"
         "如果你不确定某个信息，请直接说不知道，不要编造。\\n"
     )
+
+    # ── 模板库提示（让 Agent 知道可以生成模板报告）──
+    # 放在基础 prompt 后、记忆之前，确保 Agent 能读到
+    try:
+        from backend.api.report_routes import TEMPLATES as _TEMPLATES
+        _templates_info = []
+        for _tid, _t in _TEMPLATES.items():
+            _templates_info.append(f"  - {_tid}: {_t.get('name', _tid)} — {_t.get('description', '')}")
+        if _templates_info:
+            parts.append(
+                "\n\n## 报告模板库\n"
+                "当用户执行了扫描/检测/分析类工具并得到结果后，你**必须主动询问**用户是否需要将结果生成一份结构化报告。\n"
+                "可用模板列表：\n"
+                + "\n".join(_templates_info) + "\n\n"
+                "如果用户同意并选择了模板，你直接调用 `generate_report` 工具（不是手动调 HTTP API）：\n"
+                "- template 参数填用户选的模板ID\n"
+                "- data 参数填你本次扫描/检测得到的结果数据\n"
+                "- artifact_title 参数可选\n"
+                "注意：你必须在用户明确选择了模板之后才可以调用。调用成功后报告会出现在对话的制品面板中。"
+            )
+    except Exception as _e:
+        logger.warning(f"Failed to inject template library info: {_e}")
 
     # ── 人格注入 (Fix 1) ──
     try:
@@ -1482,6 +1471,46 @@ async def _execute_tool(tool_name: str, arguments: dict, session_id: str, user_i
             except Exception as e:
                 return f"❌ ClamAV 扫描失败: {str(e)[:200]}"
 
+        # ── 报告生成 ──
+        elif tool_name == "generate_report":
+            template = arguments.get("template", "port-scan")
+            data = arguments.get("data", {})
+            artifact_title = arguments.get("artifact_title", f"报告_{template}")
+            try:
+                # 从 tool_history 中获取最近一次扫描的完整输出
+                try:
+                    from backend.db.connection import get_db
+                    db = get_db()
+                    row = db.execute(
+                        "SELECT tool_result_summary FROM tool_history "
+                        "WHERE session_id=? AND (tool_name=? OR tool_name LIKE '%scan%' OR tool_name LIKE '%detect%') "
+                        "ORDER BY id DESC LIMIT 1",
+                        (session_id, template.replace("-scan", "_scan")),
+                    ).fetchone()
+                    if row and row["tool_result_summary"]:
+                        data["_full_scan_output"] = row["tool_result_summary"]
+                except Exception:
+                    pass  # 补充数据失败不影响主流程
+
+                # 直接调report路由函数（绕过auth，用当前user_id）
+                from backend.api.report_routes import generate_report_artifact as _gen_report
+                body = {
+                    "template": template,
+                    "data": data,
+                    "session_id": session_id,
+                    "artifact_title": artifact_title,
+                }
+                result = await _gen_report(body, user_id=user_id)
+                if result.get("ok") and result.get("data", {}).get("artifact_id"):
+                    aid = result["data"]["artifact_id"]
+                    logger.info(f"Report artifact generated: {aid} via tool_call (user={user_id})")
+                    return f"✅ 报告已生成并存入制品 (ID: {aid})。用户可在对话右侧的制品面板「文档」标签中查看和导出。"
+                else:
+                    return f"⚠️ 报告生成失败: {result.get('error', '未知错误')}"
+            except Exception as e:
+                logger.warning(f"generate_report failed: {e}")
+                return f"❌ 报告生成失败: {str(e)[:200]}"
+
         else:
             # ── 自定义工具执行（HTTP 端点）──
             # 查找用户自定义工具
@@ -1873,72 +1902,9 @@ async def _tool_loop_stream_generator(
         except Exception as e:
             logger.warning(f"Artifact extraction failed: {e}")
 
-    # ── 安全扫描报告自动生成（替换 full_text_response 为模板引擎内容）──
-    if session_scan_data:
-        try:
-            report = _generate_security_report(session_scan_data, session_id, user_id=user_id)
-            if report:
-                quality = _validate_report_quality(report)
-                logger.info(f"Security report generated. Quality check: {'PASS' if quality['pass'] else 'FAIL'} "
-                           f"({quality['passed_checks']}/{quality['total_checks']})")
-                if not quality["pass"]:
-                    logger.warning(f"Report quality issues: {quality['issues']}")
-                    issues_text = "\n".join(f"- {i}" for i in quality['issues'])
-                    quality_note = f"\n\n---\n\n> **⚠️ 数据质量校验提醒**\n> {issues_text}\n> *检查通过率: {quality['passed_checks']}/{quality['total_checks']}*"
-                    report += quality_note
-
-                # 替换完整输出（只显示模板报告）
-                report_section = f"## 📋 安全扫描报告\n\n{report}"
-                full_text_response = report_section
-                yield "data: " + json.dumps({"chunk": report_section}) + "\n\n"
-
-            # ── 再调报告引擎生成固定模板报告 ──
-            port_data = session_scan_data.get("port_scan", {})
-            vuln_data = session_scan_data.get("vuln_scan", {})
-            target = port_data.get("target") or vuln_data.get("target") or "未知"
-            tool_names = []
-            if port_data:
-                tool_names.append("Nmap (port_scan)")
-            if vuln_data:
-                tool_names.append("Nuclei (vuln_scan)")
-            if "rkhunter" in str(session_scan_data.keys()):
-                tool_names.append("rkhunter")
-            if "clamav" in str(session_scan_data.keys()):
-                tool_names.append("ClamAV")
-
-            import httpx
-            async with httpx.AsyncClient(timeout=15.0, base_url="http://localhost:8100") as cli:
-                resp = await cli.post("/api/v1/report/v2/render", json={
-                    "template": "vuln-advisory",
-                    "data": {
-                        "advisory_id": "AUTO-SCAN",
-                        "advisory_title": f"主动扫描报告 — {target}",
-                        "severity": "信息",
-                        "target": target,
-                        "scan_time": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
-                        "tool_used": " + ".join(tool_names) if tool_names else "自动检测",
-                        "tool_results": (report or "")[:500] if 'report' in dir() else "无数据",
-                        "vulnerabilities": [],
-                        "actions": ["根据扫描结果采取相应加固措施", "定期进行安全扫描"],
-                        "open_ports": "",
-                        "rootkit_findings": "（未检测）",
-                    },
-                })
-                if resp.status_code == 200:
-                    rdata = resp.json().get("data", {})
-                    rmd = rdata.get("raw_markdown", "")
-                    if rmd:
-                        try:
-                            from backend.api.artifacts_routes import store_artifact
-                            store_artifact("doc", f"模板报告_{target}", rmd, session_id=session_id, user_id=user_id)
-                        except Exception:
-                            pass
-                        logger.info(f"Template engine report generated for {target}")
-                        # 用模板报告替换整个回答内容
-                        full_text_response = f"## 📋 EvoGen 模板引擎报告\n\n{rmd}"
-                        yield f"data: {json.dumps({'chunk': full_text_response})}\n\n"
-        except Exception as e:
-            logger.warning(f"Report generation failed: {e}")
+    # ── 安全扫描报告自动生成（已移除，改为用户选择模板后生成）──
+    # 原逻辑已移除：既不覆盖原文也不自动存制品
+    # Agent 会在回复中问用户是否需要模板报告，用户确认后调用 /report/generate-artifact
 
     # 保存助手回复（含报告引擎替换后的内容）
     if full_text_response:
@@ -2649,72 +2615,22 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
             # 汇总结果（仅当报告引擎未覆盖时使用）
             summary = await _generate_summary(message, subtask_text)
 
-            # ── 安全检测报告引擎（完全替换回答内容） ──
+            # ── 安全检测报告提示（不自动生成，仅提示用户） ──
             try:
                 subtask_names = " ".join(s.get("name", "") + " " + s.get("description", "") for s in subtasks)
                 scan_kw = ["port_scan", "vuln_scan", "nmap", "nuclei", "rkhunter", "clamav",
                            "端口扫描", "漏洞扫描", "检测"]
                 if any(k in subtask_names.lower() for k in scan_kw):
-                    sub_results_text = "\n\n".join(subtask_results.values())
-
-                    # 从子任务结果中提取漏洞信息（去重+简洁格式）
-                    vulnerabilities = []
-                    seen_cves = set()
-                    for r in subtask_results.values():
-                        rl = r.lower()
-                        if "cve-" in rl or "nuclei" in rl or "vuln" in rl:
-                            for line in r.split("\n"):
-                                line_stripped = line.strip()
-                                if "cve-" in line_stripped.lower():
-                                    cve_match = re.search(r"(CVE-\d{4}-\d+)", line_stripped, re.IGNORECASE)
-                                    if cve_match:
-                                        vuln_id = cve_match.group(1).upper()
-                                        if vuln_id in seen_cves:
-                                            continue
-                                        seen_cves.add(vuln_id)
-                                        # 从行中提取描述
-                                        after_id = line_stripped[cve_match.end():].strip().lstrip(":：,， \t").strip()
-                                        name = after_id.split("。")[0].split("，")[0].split(",")[0].split("  ")[0].strip()
-                                        if not name or len(name) > 60:
-                                            name = "SimpleHelp 认证绕过漏洞(RCE)"
-                                        vuln_found = not any(kw in rl for kw in ["closed", "not found", "未发现", "0 个漏洞", "0个漏洞"])
-                                        status = "⚠️ 已发现" if vuln_found else "🔴 未确认（目标未运行服务）"
-                                        vulnerabilities.append(f"{vuln_id} - {name}（{status}）")
-
-                    report_data = {
-                        "advisory_id": "CVE-2026-48558",
-                        "advisory_title": "SimpleHelp 认证绕过漏洞 RCE",
-                        "severity": "严重",
-                        "target": "本机 (127.0.0.1)",
-                        "scan_time": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
-                        "tool_used": "Nmap (port_scan) + Nuclei (vuln_scan)",
-                        "tool_results": sub_results_text[:2000],
-                        "vulnerabilities": vulnerabilities or ["CVE-2026-48558 - SimpleHelp 认证绕过漏洞(RCE)（🔴 未确认）"],
-                        "actions": ["升级 SimpleHelp 至 5.5.8 以上版本", "如无使用请确认服务不在非标准端口"],
-                        "open_ports": "",
-                        "rootkit_findings": "（未检测）",
-                    }
-                    import httpx
-                    async with httpx.AsyncClient(timeout=15.0, base_url="http://localhost:8100") as cli:
-                        resp = await cli.post("/api/v1/report/v2/render", json={"template": "vuln-advisory", "data": report_data})
-                        if resp.status_code == 200:
-                            rdata = resp.json().get("data", {})
-                            rmd = rdata.get("raw_markdown", "")
-                            if rmd:
-                                # 存为制品
-                                try:
-                                    from backend.api.artifacts_routes import store_artifact
-                                    store_artifact("doc", f"安全报告_{report_data['target']}", rmd,
-                                                   session_id=session_id, user_id=user_id)
-                                except Exception:
-                                    pass
-                                # 直接用模板报告替换整个回答内容（覆盖LLM摘要）
-                                summary = f"""## 📋 EvoGen 安全检测报告（模板引擎生成）
-
-{rmd}"""
-                                logger.info(f"REPORT ENGINE: replaced summary with template report ({len(summary)} chars)")
+                    summary += (
+                        "\n\n📄 **是否需要将此结果生成一份结构化报告？**\n"
+                        "可用的模板：\n"
+                        "- vuln-advisory — 安全通告检测报告，包含漏洞详情、影响范围和修复建议\n"
+                        "- port-scan — 端口扫描报告，包含目标主机的端口开放情况与服务指纹识别报告\n"
+                        "- server-health — 服务器健康巡检报告\n"
+                        "请确认，我立即为你生成。"
+                    )
             except Exception as e:
-                logger.warning(f"Subtask report engine in summary failed: {e}")
+                logger.warning(f"Subtask report prompt failed: {e}")
 
             # 保存助手回复（含报告引擎追加的内容）并记录经验
             _save_message(session_id, "assistant", summary)

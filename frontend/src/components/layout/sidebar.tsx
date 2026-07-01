@@ -19,6 +19,7 @@ import {
   Zap,
   LogOut,
   BarChartBig,
+  FileText,
 } from 'lucide-react';
 import { ThemeToggle } from '@/components/shared/theme-toggle';
 import { useSessions } from '@/hooks/use-sessions';
@@ -85,6 +86,7 @@ export function Sidebar() {
         { to: '/experience/list', icon: BookOpen, label: '经验' },
         { to: '/memory/list', icon: Brain, label: '记忆' },
         { to: '/knowledge', icon: BookOpen, label: '知识库' },
+        { to: '/templates', icon: FileText, label: '模板库' },
       ],
     },
     {

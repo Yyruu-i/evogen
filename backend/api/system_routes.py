@@ -499,7 +499,7 @@ async def get_global_stats(user_id: str = Depends(get_current_user)):
     try:
         db.execute("SELECT 1 FROM scan_records LIMIT 1")
         rows = db.execute(
-            "SELECT tool_name, status FROM scan_records WHERE user_id = ?",
+            "SELECT tool_name, result_summary FROM scan_records WHERE user_id = ?",
             (user_id,),
         ).fetchall()
         for r in rows:
@@ -507,8 +507,6 @@ async def get_global_stats(user_id: str = Depends(get_current_user)):
             if tool in scan_stats:
                 scan_stats[tool] += 1
                 total_scans += 1
-            if r.get("status") == "failed":
-                total_failures += 1
     except Exception:
         pass
 

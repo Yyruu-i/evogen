@@ -182,7 +182,7 @@ export function ChatPage() {
               setReasoningRef.current(parsed.content);
             }
           } catch {
-            if (data) updateLastAssistantRef.current(data, 'sse-');
+            // 非 JSON 数据忽略，不显示到正文
           }
         }
       }

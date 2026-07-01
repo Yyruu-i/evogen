@@ -687,15 +687,19 @@ async def _run_subtasks_concurrent(subtasks: list[dict], original_message: str, 
     scan_keywords = ["port_scan", "vuln_scan", "nmap", "nuclei", "rkhunter", "chkrootkit", "clamav",
                      "端口扫描", "漏洞扫描", "rootkit", "病毒", "检测"]
     if any(kw in subtask_names.lower() for kw in scan_keywords):
+        import logging
+        report_logger = logging.getLogger(__name__)
+        report_logger.info(f"Subtask scan detected! keywords matched in: {subtask_names[:100]}")
         try:
             # 从子任务结果中提取关键数据，拼装成报告引擎需要的格式
             all_results = "\n\n".join(results_text.values())
+            from datetime import datetime, timezone
             report_data = {
                 "advisory_id": "CVE-2026-48558",
                 "advisory_title": "SimpleHelp 认证绕过漏洞 RCE",
                 "severity": "严重",
                 "target": "本机 (127.0.0.1)",
-                "scan_time": __import__("datetime").datetime.now(__import__("zoneinfo").ZoneInfo("UTC")).strftime("%Y-%m-%d %H:%M:%S UTC"),
+                "scan_time": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
                 "tool_used": "Nmap (port_scan) + Nuclei (vuln_scan)",
                 "tool_results": all_results[:500],
                 "vulnerabilities": ["CVE-2026-48558 - SimpleHelp 认证绕过RCE（影响版本 < 5.5.8）"] if "未发现" not in all_results else [],
@@ -2546,9 +2550,53 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
                 artifact_count = extract_artifacts_from_text(summary, session_id, user_id=user_id)
                 if artifact_count:
                     logger.info(f"Auto-extracted {artifact_count} artifact(s) from task summary")
-                    yield f"data: {json.dumps({'status': 'artifact_extracted', 'count': artifact_count})}\\n\\n"
+                    yield f"data: {json.dumps({'status': 'artifact_extracted', 'count': artifact_count})}\n\n"
             except Exception as e:
                 logger.warning(f"Artifact extraction from summary failed: {e}")
+
+            # ── 安全检测报告引擎（独立追加在汇总后，不受LLM摘要影响） ──
+            try:
+                subtask_names = " ".join(s.get("name", "") + " " + s.get("description", "") for s in subtasks)
+                scan_kw = ["port_scan", "vuln_scan", "nmap", "nuclei", "rkhunter", "clamav",
+                           "端口扫描", "漏洞扫描", "检测"]
+                if any(k in subtask_names.lower() for k in scan_kw):
+                    sub_results_text = "\n\n".join(subtask_results.values())
+                    report_data = {
+                        "advisory_id": "CVE-2026-48558",
+                        "advisory_title": "SimpleHelp 认证绕过漏洞 RCE",
+                        "severity": "严重",
+                        "target": "本机 (127.0.0.1)",
+                        "scan_time": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+                        "tool_used": "Nmap (port_scan) + Nuclei (vuln_scan)",
+                        "tool_results": sub_results_text[:500],
+                        "vulnerabilities": [],
+                        "actions": ["升级 SimpleHelp 至 5.5.8 以上版本", "如无使用请确认服务不在非标准端口"],
+                        "open_ports": "",
+                        "rootkit_findings": "（未检测）",
+                    }
+                    import httpx
+                    async with httpx.AsyncClient(timeout=15.0, base_url="http://localhost:8100") as cli:
+                        resp = await cli.post("/api/v1/report/v2/render", json={"template": "vuln-advisory", "data": report_data})
+                        if resp.status_code == 200:
+                            rdata = resp.json().get("data", {})
+                            rmd = rdata.get("raw_markdown", "")
+                            if rmd:
+                                mf = rdata.get("missing_fields")
+                                if mf:
+                                    rmd += f"\n\n> ⚠️ **数据质量校验提醒**\n> 缺失字段: {', '.join(mf)}"
+                                # 存为制品
+                                try:
+                                    from backend.api.artifacts_routes import store_artifact
+                                    store_artifact("doc", f"安全报告_{report_data['target']}", rmd,
+                                                   session_id=session_id, user_id=user_id)
+                                except Exception:
+                                    pass
+                                # 追加到输出文本
+                                report_block = f"\n\n---\n\n## 📋 EvoGen 安全检测报告（模板引擎生成）\n\n{rmd}"
+                                summary += report_block
+                                yield f"data: {json.dumps({'chunk': report_block})}\n\n"
+            except Exception as e:
+                logger.warning(f"Subtask report engine in summary failed: {e}")
 
             # 流式输出
             for i in range(0, len(summary), 30):

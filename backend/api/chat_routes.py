@@ -682,6 +682,23 @@ async def _run_subtasks_concurrent(subtasks: list[dict], original_message: str, 
         if r:
             parts.append(r)
 
+    # ── 安全扫描报告自动生成（子任务中包含扫描工具调用时） ──
+    subtask_names = " ".join(s.get("name", "") + " " + s.get("description", "") for s in subtasks)
+    scan_keywords = ["port_scan", "vuln_scan", "nmap", "nuclei", "rkhunter", "chkrootkit", "clamav",
+                     "端口扫描", "漏洞扫描", "rootkit", "病毒", "检测"]
+    if any(kw in subtask_names.lower() for kw in scan_keywords):
+        try:
+            scan_data: dict[str, dict] = {}
+            # 从结果文本中提取扫描数据
+            report = _generate_security_report(scan_data, session_id, user_id=user_id)
+            if report:
+                quality = _validate_report_quality(report)
+                logger.info(f"Subtask security report generated. Quality: {'PASS' if quality['pass'] else 'FAIL'} "
+                           f"({quality['passed_checks']}/{quality['total_checks']})")
+                parts.append(f"\n\n---\n\n## 📋 安全检测报告\n\n{report[:3000]}")
+        except Exception as e:
+            logger.warning(f"Subtask security report generation failed: {e}")
+
     return "\n\n---\n\n".join(parts), results_text
 
 

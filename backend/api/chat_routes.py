@@ -1836,6 +1836,52 @@ async def _tool_loop_stream_generator(
                     if full_text_response:
                         full_text_response += quality_note
                         _save_message(session_id, "assistant", full_text_response[len(full_text_response) - len(quality_note):])
+
+            # ── 再调报告引擎生成固定模板报告 ──
+            port_data = session_scan_data.get("port_scan", {})
+            vuln_data = session_scan_data.get("vuln_scan", {})
+            target = port_data.get("target") or vuln_data.get("target") or "未知"
+            tool_names = []
+            if port_data:
+                tool_names.append("Nmap (port_scan)")
+            if vuln_data:
+                tool_names.append("Nuclei (vuln_scan)")
+            if "rkhunter" in str(session_scan_data.keys()):
+                tool_names.append("rkhunter")
+            if "clamav" in str(session_scan_data.keys()):
+                tool_names.append("ClamAV")
+
+            import httpx
+            async with httpx.AsyncClient(timeout=15.0, base_url="http://localhost:8100") as cli:
+                resp = await cli.post("/api/v1/report/v2/render", json={
+                    "template": "vuln-advisory",
+                    "data": {
+                        "advisory_id": "AUTO-SCAN",
+                        "advisory_title": f"主动扫描报告 — {target}",
+                        "severity": "信息",
+                        "target": target,
+                        "scan_time": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+                        "tool_used": " + ".join(tool_names) if tool_names else "自动检测",
+                        "tool_results": report[:500] if report else "无数据",
+                        "vulnerabilities": [],
+                        "actions": ["根据扫描结果采取相应加固措施", "定期进行安全扫描"],
+                        "open_ports": "",
+                        "rootkit_findings": "（未检测）",
+                    },
+                })
+                if resp.status_code == 200:
+                    rdata = resp.json().get("data", {})
+                    rmd = rdata.get("raw_markdown", "")
+                    if rmd:
+                        mf = rdata.get("missing_fields")
+                        if mf:
+                            rmd += f"\n\n> ⚠️ **数据质量校验提醒**\n> 缺失字段: {', '.join(mf)}"
+                        try:
+                            from backend.api.artifacts_routes import store_artifact
+                            store_artifact("doc", f"模板报告_{target}", rmd, session_id=session_id, user_id=user_id)
+                        except Exception:
+                            pass
+                        logger.info(f"Template engine report generated for {target}")
         except Exception as e:
             logger.warning(f"Report generation failed: {e}")
 

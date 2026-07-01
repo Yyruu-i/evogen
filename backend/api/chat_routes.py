@@ -1513,6 +1513,22 @@ def _recommend_tools(query: str) -> str:
             "- 📖 **漏洞知识库**: 自动检索相关 CVE 漏洞信息"
         )
 
+    # 安全通告关键词 — 触发自动编排链路
+    advisory_keywords = ["通告", "公告", "安全公告", "cve", "cve-", "漏洞通告",
+                         "预警", "紧急", "应急", "补丁", "月份安全公告", "漏洞预警",
+                         "安全动态", "威胁情报", "安全通报", "cisa", "nvd",
+                         "零日", "0day", "远程代码执行", "rce", "文件包含", "sql注入"]
+    if any(kw in query.lower() for kw in advisory_keywords):
+        recommendations.append(
+            "📢 **检测到安全通告/威胁情报消息**\\n"
+            "  此消息包含安全通告内容，我会自动：\\n"
+            "  1. 分析通告中的漏洞信息和受影响产品\\n"
+            "  2. 根据通告内容选择最合适的检测工具\\n"
+            "  3. 执行检测并收集结果\\n"
+            "  4. 调用报告引擎生成固定模板的检测报告\\n"
+            "  5. 输出完整的**安全通告检测报告**"
+        )
+
     # 网页/浏览器相关
     browser_keywords = ["打开", "网页", "网站", "浏览器", "截图", "url", "http", "页面"]
     if any(kw in query.lower() for kw in browser_keywords):

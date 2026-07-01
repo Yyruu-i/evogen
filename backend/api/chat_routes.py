@@ -161,36 +161,74 @@ BROWSER_TOOLS: list[dict] = [
 ]
 
 # 全部工具（可后续扩展 terminal、web_search 等）
+# 每个工具包含 vendor（厂商/项目名）和 purpose（用途说明），供前端展示和 LLM 选型参考
 ALL_TOOLS: list[dict] = BROWSER_TOOLS + [
+    # ── 端口扫描类 ──
     {
         "type": "function",
         "function": {
             "name": "port_scan",
-            "description": "端口扫描 — 使用 nmap 扫描目标 IP/域名的开放端口和服务",
+            "description": "[nmap] 端口扫描 — 扫描目标 IP/域名的开放端口、服务版本、操作系统指纹",
+            "vendor": "nmap.org",
+            "purpose": "网络资产发现 / 端口服务探测",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "target": {"type": "string", "description": "目标 IP 或域名"},
                     "ports": {"type": "string", "description": "端口范围，如 22,80,443 或 1-1000（默认 1-1000）"},
-                    "arguments": {"type": "string", "description": "额外 nmap 参数，如 -sV（版本检测） -sC（默认脚本）"},
+                    "arguments": {"type": "string", "description": "额外 nmap 参数，如 -sV（版本检测） -sC（默认脚本） -O（操作系统检测）"},
                 },
                 "required": ["target"],
+            },
+        },
+    },
+    # ── 漏洞扫描类 ──
+    {
+        "type": "function",
+        "function": {
+            "name": "vuln_scan",
+            "description": "[Nuclei] 漏洞扫描 — 使用 ProjectDiscovery Nuclei 对目标 URL/IP 进行多模板漏洞检测",
+            "vendor": "projectdiscovery.io",
+            "purpose": "通用漏洞检测 / CVE 排查",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "目标 URL 或 IP"},
+                    "severity": {"type": "string", "description": "严重级别过滤，如 critical,high,medium,low（默认 critical,high）"},
+                    "templates": {"type": "string", "description": "指定 Nuclei 模板路径或类型"},
+                },
+                "required": ["target"],
+            },
+        },
+    },
+    # ── Rootkit 检测类 ──
+    {
+        "type": "function",
+        "function": {
+            "name": "rkhunter_scan",
+            "description": "[Rootkit Hunter] Rootkit/恶意软件检测 — 检查系统后门、隐藏文件、异常内核模块",
+            "vendor": "rootkit.nl / rkhunter Project",
+            "purpose": "主机入侵检测 / Rootkit 排查",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "check_all": {"type": "boolean", "description": "是否执行全面检查（包括文件属性校验），默认 true"},
+                },
             },
         },
     },
     {
         "type": "function",
         "function": {
-            "name": "vuln_scan",
-            "description": "漏洞扫描 — 使用 Nuclei 对目标进行漏洞检测",
+            "name": "chkrootkit_scan",
+            "description": "[chkrootkit] Rootkit 检测 — 本地检查已知 Rootkit 特征、隐藏进程/端口/内核模块",
+            "vendor": "chkrootkit.org",
+            "purpose": "主机入侵检测 / Rootkit 排查（互补 rkhunter）",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "target": {"type": "string", "description": "目标 URL 或 IP"},
-                    "severity": {"type": "string", "description": "严重级别过滤，如 critical,high,medium（默认 critical,high）"},
-                    "templates": {"type": "string", "description": "指定 Nuclei 模板路径或类型"},
+                    "quick": {"type": "boolean", "description": "仅快速检测常见 rootkit，默认 true"},
                 },
-                "required": ["target"],
             },
         },
     },
@@ -1018,6 +1056,45 @@ async def _execute_tool(tool_name: str, arguments: dict, session_id: str, user_i
                 fallback_result = _run_mcp_tool("scripts/mcp_nmap_server.py", "port_scan", fallback_args)
                 return f"⚠️ vuln_scan 失败，已切换至 port_scan:\n{fallback_result}"
             return result
+
+        # ── Rootkit 检测 ──
+        elif tool_name == "rkhunter_scan":
+            check_all = arguments.get("check_all", True)
+            cmd = ["rkhunter", "--check", "--skip-keypress", "--no-summary"]
+            if not check_all:
+                cmd.append("--quick")
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                output = result.stdout if result.stdout else result.stderr[:1000]
+                # 提取关键行
+                lines = output.strip().split("\n")
+                info_lines = [l for l in lines if any(kw in l for kw in ["Warning", "Infected", "Rootkit", "System checks"])]
+                summary = "\n".join(info_lines[-30:]) if info_lines else output[:1500]
+                return f"✅ rkhunter 执行完成\n{summary}"
+            except subprocess.TimeoutExpired:
+                return "❌ rkhunter 执行超时（>120s）"
+            except Exception as e:
+                return f"❌ rkhunter 执行失败: {str(e)[:200]}"
+
+        elif tool_name == "chkrootkit_scan":
+            quick = arguments.get("quick", True)
+            try:
+                cmd = ["chkrootkit"]
+                if quick:
+                    cmd.append("-q")
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                output = result.stdout.strip() if result.stdout else result.stderr[:1000]
+                # 提取 INFECTED 行（实际发现的内容）
+                infected_lines = [l for l in output.split("\n") if "INFECTED" in l.upper() or "not infected" in l.lower() or "warning" in l.lower()]
+                if infected_lines:
+                    summary = "\n".join(infected_lines)
+                else:
+                    summary = output[:1500] if output else "未发现异常"
+                return f"✅ chkrootkit 执行完成\n{summary}"
+            except subprocess.TimeoutExpired:
+                return "❌ chkrootkit 执行超时（>120s）"
+            except Exception as e:
+                return f"❌ chkrootkit 执行失败: {str(e)[:200]}"
 
         else:
             # ── 自定义工具执行（HTTP 端点）──

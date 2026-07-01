@@ -8,7 +8,9 @@ import subprocess
 import time
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+
+from backend.auth.dependencies import get_current_user
 
 logger = logging.getLogger(__name__)
 
@@ -475,5 +477,74 @@ async def system_logs(
             "total": len(entries),
             "entries": entries,
             "log_file": _LOG_PATH,
+        },
+    }
+
+
+# ── 全局检测统计 ──
+
+
+@router.get("/stats")
+async def get_global_stats(user_id: str = Depends(get_current_user)):
+    """获取当前用户的全局检测统计（从会话记录和扫描记录中汇总）."""
+    from backend.db.connection import get_db
+    db = get_db()
+
+    # 扫描记录统计
+    scan_stats = {"port_scan": 0, "vuln_scan": 0, "rkhunter_scan": 0, "chkrootkit_scan": 0}
+    total_scans = 0
+    total_failures = 0
+    
+    # scan_records 表可能不存在，用 try
+    try:
+        db.execute("SELECT 1 FROM scan_records LIMIT 1")
+        rows = db.execute(
+            "SELECT tool_name, status FROM scan_records WHERE user_id = ?",
+            (user_id,),
+        ).fetchall()
+        for r in rows:
+            tool = r["tool_name"]
+            if tool in scan_stats:
+                scan_stats[tool] += 1
+                total_scans += 1
+            if r.get("status") == "failed":
+                total_failures += 1
+    except Exception:
+        pass
+
+    # 会话统计
+    sessions_count = 0
+    artifacts_count = 0
+    try:
+        srow = db.execute(
+            "SELECT COUNT(*) as cnt FROM sessions WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+        sessions_count = srow["cnt"] if srow else 0
+        
+        arow = db.execute(
+            "SELECT COUNT(*) as cnt FROM artifacts WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+        artifacts_count = arow["cnt"] if arow else 0
+    except Exception:
+        pass
+
+    # 工具排行
+    tool_ranking = sorted(
+        [(name, count) for name, count in scan_stats.items() if count > 0],
+        key=lambda x: -x[1],
+    )
+
+    return {
+        "ok": True,
+        "data": {
+            "scanStats": scan_stats,
+            "totalScans": total_scans,
+            "totalFailures": total_failures,
+            "failureRate": round(total_failures / total_scans * 100, 1) if total_scans > 0 else 0,
+            "sessionsCount": sessions_count,
+            "artifactsCount": artifacts_count,
+            "toolRanking": tool_ranking,
         },
     }

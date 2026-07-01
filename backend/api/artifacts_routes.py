@@ -301,3 +301,34 @@ async def delete_artifact(artifact_id: str, user_id: str = Depends(get_current_u
     db.commit()
     logger.info("Artifact deleted: %s type=%s title=%s", artifact_id, row["type"], row["title"])
     return {"ok": True, "data": {"deleted": artifact_id}}
+
+
+@router.post("/{artifact_id}/to-knowledge")
+async def artifact_to_knowledge(artifact_id: str, user_id: str = Depends(get_current_user)):
+    """将制品内容一键存入知识库."""
+    from backend.db.connection import get_db
+    db = get_db()
+    row = db.execute(
+        "SELECT id, type, title, content FROM artifacts WHERE id = ? AND user_id = ?",
+        (artifact_id, user_id),
+    ).fetchone()
+    if not row:
+        return {"ok": False, "error": "Artifact not found"}
+
+    knowledge_content = f"# {row['title']}\n\n{row['content']}"
+    knowledge_source = f"制品:{row['type']}/{row['title']}"
+
+    # 写入 knowledge_entries 表
+    from backend.api.knowledge_routes import _ensure_table
+    _ensure_table()
+    import uuid
+    from datetime import datetime, timezone
+    entry_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    db.execute(
+        "INSERT INTO knowledge_entries (id, user_id, content, source, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (entry_id, user_id, knowledge_content, knowledge_source, now, now),
+    )
+    db.commit()
+    logger.info("Artifact → Knowledge: %s → %s (user=%s)", artifact_id, entry_id, user_id)
+    return {"ok": True, "data": {"knowledge_id": entry_id, "source": knowledge_source}}

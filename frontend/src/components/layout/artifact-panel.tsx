@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Highlight, themes } from 'prism-react-renderer';
-import { Code2, Image, FileText, PanelRightClose, PanelRightOpen, X, ChevronDown, Download } from 'lucide-react';
+import { Code2, Image, FileText, PanelRightClose, PanelRightOpen, X, ChevronDown, Download, BookOpen } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { artifactsApi } from '@/lib/api';
@@ -54,6 +54,7 @@ export function ArtifactPanel() {
   const [activeTab, setActiveTab] = useState<ArtifactTab>('code');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [imgErrors, setImgErrors] = useState<Set<string>>(new Set());
+  const [savingToKnowledge, setSavingToKnowledge] = useState<string | null>(null);
   const queryClient = useQueryClient();
   const { state: { activeSessionId } } = useChatContext();
 
@@ -121,6 +122,22 @@ export function ArtifactPanel() {
       queryClient.invalidateQueries({ queryKey: ['artifacts'] });
     } catch (err) {
       console.error('Failed to delete artifact:', err);
+    }
+  };
+
+  const handleSaveToKnowledge = async (e: React.MouseEvent, artifact: ArtifactType) => {
+    e.stopPropagation();
+    setSavingToKnowledge(artifact.id);
+    try {
+      const res = await artifactsApi.toKnowledge(artifact.id);
+      if (res?.data?.knowledge_id) {
+        alert(`✅ 已存入知识库\n来源: ${res.data.source}`);
+      }
+    } catch (err) {
+      console.error('Failed to save to knowledge:', err);
+      alert('❌ 存入知识库失败');
+    } finally {
+      setSavingToKnowledge(null);
     }
   };
 
@@ -256,7 +273,7 @@ export function ArtifactPanel() {
 
                   {/* Export Word button */}
                   {(activeTab === 'code' || activeTab === 'doc') && (
-                    <div className="px-3 pb-2 flex justify-end">
+                    <div className="px-3 pb-2 flex justify-end gap-2">
                       <button
                         className="flex items-center gap-1 px-2 py-1 text-[10px] font-medium rounded-md transition-all hover:opacity-80"
                         style={{
@@ -271,6 +288,19 @@ export function ArtifactPanel() {
                       >
                         <Download className="w-3 h-3" />
                         Word
+                      </button>
+                      <button
+                        className="flex items-center gap-1 px-2 py-1 text-[10px] font-medium rounded-md transition-all hover:opacity-80"
+                        style={{
+                          background: 'rgba(0,255,136,0.08)',
+                          color: 'var(--color-mint)',
+                        }}
+                        onClick={(e) => handleSaveToKnowledge(e, artifact)}
+                        disabled={savingToKnowledge === artifact.id}
+                        title="一键存入知识库"
+                      >
+                        <BookOpen className="w-3 h-3" />
+                        {savingToKnowledge === artifact.id ? '保存中…' : '知识库'}
                       </button>
                     </div>
                   )}

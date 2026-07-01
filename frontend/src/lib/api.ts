@@ -278,6 +278,10 @@ export const artifactsApi = {
   delete(id: string) {
     return request<{ deleted: string }>(`/artifacts/${id}`, { method: 'DELETE' });
   },
+
+  toKnowledge(id: string) {
+    return request<{ knowledge_id: string; source: string }>(`/artifacts/${id}/to-knowledge`, { method: 'POST' });
+  },
 };
 
 // ── Chat (SSE streaming) ──────────────────────────────────────

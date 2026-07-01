@@ -2609,7 +2609,7 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
             subtask_text, subtask_results = await _run_subtasks_concurrent(subtasks, message, session_id, user_id)
 
             # 保存执行结果
-            _save_message(session_id, "system", subtask_text[:500])
+            _save_message(session_id, "system", subtask_text)
 
             # 通知前端：开始汇总
             yield f"data: {json.dumps({'status': 'summarizing', 'message': '正在汇总子任务结果…'})}\n\n"

@@ -13,6 +13,7 @@ import uuid
 from datetime import datetime, timezone
 
 import httpx
+from typing import AsyncGenerator
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -254,7 +255,15 @@ def _get_all_tools_for_user(user_id: str) -> list[dict]:
                     },
                 },
             })
-        return base
+        # 去重：DeepSeek API 要求工具名称必须唯一
+        seen_names = set()
+        deduped = []
+        for t in base:
+            name = t.get("function", {}).get("name", "")
+            if name and name not in seen_names:
+                seen_names.add(name)
+                deduped.append(t)
+        return deduped
     except Exception as e:
         logger.warning(f"Failed to load custom tools from registry for user={user_id}: {e}")
 
@@ -1044,13 +1053,22 @@ async def _execute_tool(tool_name: str, arguments: dict, session_id: str, user_i
 # ════════════════════════════════════════════════════════
 
 
-async def _call_llm_nonstream(
+# ════════════════════════════════════════════════════════
+# 流式 LLM 调用（支持 reasoning + content + tool_calls 逐 chunk 推送）
+# ════════════════════════════════════════════════════════
+
+
+async def _call_llm_stream(
     messages: list[dict],
     tools: list[dict] | None = None,
-) -> dict:
-    """调用 DeepSeek LLM（非流式），返回完整响应 dict.
+) -> AsyncGenerator[dict, None]:
+    """流式调用 LLM，逐 chunk yield 结果。
 
-    返回格式: {"content": str|None, "tool_calls": list|None}
+    Yields:
+        {"type": "reasoning", "content": str}  — 思考过程逐 chunk
+        {"type": "content", "content": str}    — 正文（最后一次性返回）
+        {"type": "tool_calls", "calls": list}  — 工具调用
+        {"type": "error", "content": str}      — 错误
     """
     url = f"{_get_llm_base_url().rstrip('/')}/v1/chat/completions"
     headers = {
@@ -1063,43 +1081,159 @@ async def _call_llm_nonstream(
         "temperature": 0.7,
         "max_tokens": 4096,
     }
-    # 尝试获取 reasoning（DeepSeek R1 等模型支持）
-    payload["reasoning_model"] = True  # 暗示需要 reasoning
+    # 有 tools → 非流式（保证 tool_calls 正确返回）
+    # 无 tools → 流式 + thinking（逐字出 reasoning）
+    model_name = _get_current_model()
     if tools:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
+        # 非流式请求，等待完整响应
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+            if resp.status_code != 200:
+                error_text = resp.text[:500]
+                logger.error(f"LLM API error: {resp.status_code} {error_text}")
+                yield {"type": "error", "content": f"❌ LLM 调用失败 (HTTP {resp.status_code})"}
+                return
+            data = resp.json()
+            choice = data.get("choices", [{}])[0]
+            msg = choice.get("message", {})
+            reasoning = msg.get("reasoning_content") or choice.get("reasoning_content") or ""
+            raw_tool_calls = msg.get("tool_calls")
+            if raw_tool_calls:
+                calls = []
+                for tc in raw_tool_calls:
+                    fn = tc.get("function", {})
+                    try:
+                        args = json.loads(fn.get("arguments", "{}"))
+                    except json.JSONDecodeError:
+                        args = {}
+                    calls.append({"id": tc.get("id", ""), "name": fn.get("name", ""), "arguments": args})
+                if reasoning:
+                    yield {"type": "reasoning", "content": reasoning}
+                yield {"type": "tool_calls", "calls": calls}
+            else:
+                content = msg.get("content", "")
+                if reasoning:
+                    yield {"type": "reasoning", "content": reasoning}
+                if content:
+                    yield {"type": "content", "content": content}
+            return
+    # ═══════════════════════════
+    # 无 tools → 流式（纯聊天，支持 reasoning 逐字推送）
+    # ═══════════════════════════
+    payload["stream"] = True
+    if model_name == "deepseek-v4-pro":
+        payload["reasoning_effort"] = "high"
+        payload["extra_body"] = {"thinking": {"type": "enabled"}}
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        resp = await client.post(url, json=payload, headers=headers)
-        if resp.status_code != 200:
-            error_text = resp.text[:500]
-            logger.error(f"LLM API error: {resp.status_code} {error_text}")
-            return {"content": f"❌ LLM 调用失败 (HTTP {resp.status_code})", "tool_calls": None}
+    accumulated_content = ""
+    accumulated_reasoning = ""
+    accumulated_tool_calls: dict[int, dict] = {}  # index -> partial
+    has_reasoning = False
 
-        data = resp.json()
-        choice = data.get("choices", [{}])[0]
-        msg = choice.get("message", {})
-        # 提取 reasoning_content（DeepSeek R1 等模型返回）
-        reasoning = msg.get("reasoning_content") or choice.get("reasoning_content") or ""
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            async with client.stream("POST", url, json=payload, headers=headers) as resp:
+                if resp.status_code != 200:
+                    error_text = await resp.aread()
+                    error_msg = error_text.decode()[:500]
+                    logger.error(f"LLM API error: {resp.status_code} {error_msg}")
+                    yield {"type": "error", "content": f"❌ LLM 调用失败 (HTTP {resp.status_code})"}
+                    return
 
-        # 检查 tool_calls
-        raw_tool_calls = msg.get("tool_calls")
-        if raw_tool_calls:
-            tool_calls = []
-            for tc in raw_tool_calls:
-                fn = tc.get("function", {})
+                # 解析 SSE 流
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    data_str = line[6:].strip()
+                    if data_str in ("[DONE]", ""):
+                        break
+                    try:
+                        data = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        continue
+
+                    choices = data.get("choices", [])
+                    if not choices:
+                        continue
+                    delta = choices[0].get("delta", {})
+
+                    # ── reasoning_content（R1 等模型） ──
+                    rc = delta.get("reasoning_content") or delta.get("reasoning") or ""
+                    if rc:
+                        has_reasoning = True
+                        accumulated_reasoning += rc
+                        yield {"type": "reasoning", "content": rc}
+                        continue
+
+                    # ── tool_calls（流式工具调用，需拼装） ──
+                    tc_list = delta.get("tool_calls")
+                    if tc_list:
+                        logger.debug(f"Stream tool_calls delta: {json.dumps(tc_list)[:200]}")
+                        for tc in tc_list:
+                            idx = tc.get("index", 0)
+                            if idx not in accumulated_tool_calls:
+                                fn = tc.get("function", {})
+                                accumulated_tool_calls[idx] = {
+                                    "id": tc.get("id", ""),
+                                    "name": fn.get("name", ""),
+                                    "arguments": fn.get("arguments", ""),
+                                }
+                            else:
+                                fn = tc.get("function", {})
+                                if fn.get("arguments"):
+                                    accumulated_tool_calls[idx]["arguments"] += fn["arguments"]
+                                if tc.get("id"):
+                                    accumulated_tool_calls[idx]["id"] = tc["id"]
+                                if fn.get("name"):
+                                    accumulated_tool_calls[idx]["name"] = fn["name"]
+                        continue
+
+                    # ── content（正文字） ──
+                    content = delta.get("content") or ""
+                    if content:
+                        accumulated_content += content
+
+        # ── 流结束，判断走哪个分支 ──
+
+        # 检查最后一条 chunks 的 finish_reason
+        # DeepSeek 流式模式下 tool_calls 可能在 finish chunk 出现
+        if not accumulated_tool_calls and not has_reasoning and not accumulated_content:
+            pass  # 没有数据，继续到下一轮
+
+        # 有 reasoning → 先 yield reasoning 再 yield content
+        if has_reasoning:
+            if accumulated_content:
+                yield {"type": "content", "content": accumulated_content}
+            # 如果只有 reasoning 没有 content，也结束
+            return
+
+        # 有 tool_calls → yield tool_calls
+        if accumulated_tool_calls:
+            calls = []
+            for idx in sorted(accumulated_tool_calls.keys()):
+                tc = accumulated_tool_calls[idx]
                 try:
-                    args = json.loads(fn.get("arguments", "{}"))
+                    args = json.loads(tc["arguments"]) if tc["arguments"] else {}
                 except json.JSONDecodeError:
                     args = {}
-                tool_calls.append({
-                    "id": tc.get("id", ""),
-                    "name": fn.get("name", ""),
+                calls.append({
+                    "id": tc["id"],
+                    "name": tc["name"],
                     "arguments": args,
                 })
-            return {"content": msg.get("content"), "tool_calls": tool_calls, "reasoning": reasoning}
+            yield {"type": "tool_calls", "calls": calls}
+            return
 
-        return {"content": msg.get("content", ""), "tool_calls": None, "reasoning": reasoning}
+        # 纯文本 → yield content（chat 模型）
+        if accumulated_content:
+            yield {"type": "content", "content": accumulated_content}
+            return
+
+    except Exception as e:
+        logger.error(f"LLM stream call failed: {e}")
+        yield {"type": "error", "content": f"❌ LLM 流式调用异常: {str(e)[:200]}"}
 
 
 # ════════════════════════════════════════════════════════
@@ -1136,17 +1270,26 @@ async def _tool_loop_stream_generator(
     while iteration < max_rounds:
         iteration += 1
 
-        # 调用 LLM（非流式，带工具定义）
-        result = await _call_llm_nonstream(llm_messages, tools=_get_all_tools_for_user(user_id))
+        # 调用 LLM（流式，逐 chunk 推送 reasoning / content / tool_calls）
+        tool_calls_for_round = None
+        text_content_for_round = ""
+        reasoning_yielded = False
 
-        # 如果 LLM 返回了 reasoning_content（R1 模型），推送给前端
-        reasoning = result.get("reasoning", "")
-        if reasoning:
-            yield f"data: {json.dumps({'status': 'reasoning', 'content': reasoning})}\n\n"
+        async for evt in _call_llm_stream(llm_messages, tools=_get_all_tools_for_user(user_id)):
+            if evt["type"] == "reasoning":
+                reasoning_yielded = True
+                yield f"data: {json.dumps({'status': 'reasoning', 'content': evt['content']})}\n\n"
+            elif evt["type"] == "content":
+                text_content_for_round = evt["content"]
+            elif evt["type"] == "tool_calls":
+                tool_calls_for_round = evt["calls"]
+            elif evt["type"] == "error":
+                yield f"data: {json.dumps({'chunk': evt['content']})}\n\n"
+                break
 
         # ── 情况 1：有 tool_calls → 执行工具 ──
-        if result.get("tool_calls"):
-            for tc in result["tool_calls"]:
+        if tool_calls_for_round:
+            for tc in tool_calls_for_round:
                 tool_name = tc["name"]
                 tool_args = tc["arguments"]
                 tool_call_id = tc.get("id", f"call_{iteration}")
@@ -1164,7 +1307,7 @@ async def _tool_loop_stream_generator(
                     yield f"data: {json.dumps({'status': 'tool_skipped', 'tool': tool_name, 'result': disabled_msg})}\n\n"
                     llm_messages.append({
                         "role": "assistant",
-                        "content": result.get("content") or "",
+                        "content": "",
                     })
                     llm_messages.append({
                         "role": "tool",
@@ -1193,7 +1336,7 @@ async def _tool_loop_stream_generator(
                     f"🔧 调用工具: {tool_name}({args_summary})\\n结果: {tool_result[:200]}")
 
                 # 通知前端：工具执行完成
-                yield f"data: {json.dumps({'status': 'tool_result', 'tool': tool_name, 'result': tool_result[:300]})}\\n\\n"
+                yield f"data: {json.dumps({'status': 'tool_result', 'tool': tool_name, 'result': tool_result[:300]})}\\\n\\n"
 
                 # 收集扫描数据（用于报告）
                 if tool_name in ("port_scan", "vuln_scan"):
@@ -1207,7 +1350,7 @@ async def _tool_loop_stream_generator(
                 # 将工具调用和结果追加到 messages
                 llm_messages.append({
                     "role": "assistant",
-                    "content": result.get("content") or "",
+                    "content": "",
                     "tool_calls": [{
                         "id": tool_call_id,
                         "type": "function",
@@ -1227,7 +1370,7 @@ async def _tool_loop_stream_generator(
             continue
 
         # ── 情况 2：纯文本响应 → 流式输出 ──
-        text = result.get("content") or ""
+        text = text_content_for_round
         full_text_response = text
 
         if text:

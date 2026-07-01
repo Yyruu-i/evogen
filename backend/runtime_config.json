@@ -1,4 +1,5 @@
 {
   "max_agent_rounds": 90,
-  "llm_model": "deepseek-v4-pro"
+  "llm_model": "deepseek-v4-pro",
+  "custom_models": {}
 }

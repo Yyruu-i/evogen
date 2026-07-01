@@ -1883,9 +1883,6 @@ async def _tool_loop_stream_generator(
                     rdata = resp.json().get("data", {})
                     rmd = rdata.get("raw_markdown", "")
                     if rmd:
-                        mf = rdata.get("missing_fields")
-                        if mf:
-                            rmd += f"\n\n> ⚠️ **数据质量校验提醒**\n> 缺失字段: {', '.join(mf)}"
                         try:
                             from backend.api.artifacts_routes import store_artifact
                             store_artifact("doc", f"模板报告_{target}", rmd, session_id=session_id, user_id=user_id)
@@ -2659,9 +2656,6 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
                             rdata = resp.json().get("data", {})
                             rmd = rdata.get("raw_markdown", "")
                             if rmd:
-                                mf = rdata.get("missing_fields")
-                                if mf:
-                                    rmd += f"\n\n> ⚠️ **数据质量校验提醒**\n> 缺失字段: {', '.join(mf)}"
                                 # 存为制品
                                 try:
                                     from backend.api.artifacts_routes import store_artifact

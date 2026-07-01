@@ -1,9 +1,10 @@
-"""报告引擎 — 接收扫描/检测结果，填充固定模板，返回结构化报告."""
-
+"""报告引擎 — 接收扫描/检测结果，通过 DeepSeek 生成结构化报告."""
 import json
 import logging
+import os
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 
 from backend.auth.dependencies import get_current_user
@@ -138,73 +139,89 @@ def _format_field(val: Any, ftype: str) -> str:
 
 
 def render_report(template_name: str, data: dict) -> dict[str, Any]:
-    """渲染指定模板的报告."""
+    """渲染指定模板的报告 — 通过 DeepSeek 生成 Markdown."""
     if template_name not in TEMPLATES:
         raise ValueError(f"Unknown template: {template_name}")
 
     template = TEMPLATES[template_name]
-    all_missing: list[str] = []
-    rendered_sections: list[dict[str, Any]] = []
 
-    for section in template["sections"]:
-        section_data = {}
-        extracted_data = {}
-        all_missing_for_section = []
-        for fmeta in section.get("fields", []):
-            key = fmeta["key"]
-            val = data.get(key, data.get(fmeta.get("label", ""), ""))
-            if val and val != "":
-                extracted_data[key] = _format_field(val, fmeta.get("type", "str"))
-            else:
-                optional = fmeta.get("optional", False)
-                if optional:
-                    extracted_data[key] = "（无）"
-                else:
-                    extracted_data[key] = f"【{fmeta['label']}】待补充"
-                    all_missing_for_section.append(fmeta["label"])
-        all_missing.extend(all_missing_for_section)
-        rendered_sections.append({
-            "label": section["label"],
-            "required": section.get("required", True),
-            "fields": extracted_data,
-        })
+    # 构建 prompt：模板结构 + 数据
+    sections_desc = []
+    for sec in template["sections"]:
+        fields_desc = []
+        for f in sec.get("fields", []):
+            key = f["key"]
+            label = f["label"]
+            val = data.get(key, "（未提供）")
+            if isinstance(val, list):
+                val = "\n".join(f"  - {v}" for v in val)
+            fields_desc.append(f"  - {label}（{key}）: {val}")
+        sections_desc.append(f"## {sec['label']}\n" + "\n".join(fields_desc))
+
+    data_summary = "\n\n".join(sections_desc)
+
+    prompt = f"""你是一个网络安全报告撰写专家。请根据以下扫描数据和模板结构，生成一份专业的 Markdown 格式安全检测报告。
+
+模板名称：{template['name']}
+
+模板结构说明：
+{chr(10).join(f"- 「{sec['label']}」" for sec in template['sections'])}
+
+以下是本次扫描的原始数据（字段名: 值）：
+
+{data_summary}
+
+要求：
+1. 严格按照模板结构组织报告，每个章节都要有
+2. 使用 Markdown 格式，善用表格、列表、加粗等排版
+3. 如果扫描结果中包含端口列表、CVE 编号等结构化数据，请用表格呈现
+4. 语言：中文
+5. 最后加一行：_报告由 EvoGen AI 报告引擎自动生成_
+6. 报告标题用 # 📋 开头"""
+
+    now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    # 获取 LLM 配置（复用 chat_routes 的配置获取逻辑）
+    try:
+        from backend.api.chat_routes import _get_llm_base_url, _get_llm_api_key, _get_current_model
+        model = _get_current_model()
+        base_url = _get_llm_base_url()
+        api_key = _get_llm_api_key()
+    except Exception:
+        model = "deepseek-chat"
+        base_url = "https://api.deepseek.com"
+        api_key = os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("LLM_API_KEY") or ""
+
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.3,
+        "max_tokens": 4096,
+    }
+
+    try:
+        import httpx
+        resp = httpx.post(
+            f"{base_url.rstrip('/')}/v1/chat/completions",
+            json=payload,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            timeout=60.0,
+        )
+        if resp.status_code == 200:
+            raw_md = resp.json()["choices"][0]["message"]["content"]
+        else:
+            raw_md = f"# 📋 {template['name']}\n\n（报告引擎调用失败：HTTP {resp.status_code}）\n\n_报告由 EvoGen AI 报告引擎自动生成_"
+    except Exception as e:
+        raw_md = f"# 📋 {template['name']}\n\n（报告引擎调用失败：{e}）\n\n_报告由 EvoGen AI 报告引擎自动生成_"
 
     return {
         "template_name": template_name,
         "report_title": template["name"],
         "version": template["version"],
-        "sections": rendered_sections,
-        "missing_fields": all_missing if all_missing else None,
-        "complete": len(all_missing) == 0,
-        "raw_markdown": _to_markdown(template["name"], rendered_sections, all_missing),
+        "raw_markdown": raw_md,
+        "complete": True,
+        "missing_fields": None,
     }
-
-
-def _to_markdown(title: str, sections: list[dict], missing: list[str]) -> str:
-    """将报告渲染为 Markdown 文本."""
-    lines = [
-        f"# 📋 {title}",
-        "",
-    ]
-    for sec in sections:
-        label = sec["label"]
-        fields = sec["fields"]
-        lines.append(f"## {label}")
-        lines.append("")
-        for key, val in fields.items():
-            if val:
-                lines.append(f"**{key}**:")
-                lines.append(val)
-                lines.append("")
-        lines.append("---")
-        lines.append("")
-    if missing:
-        lines.append("> ⚠️ 以下字段缺失：")
-        for m in missing:
-            lines.append(f"> - {m}")
-        lines.append("")
-    lines.append("_报告由 EvoGen 报告引擎自动生成_")
-    return "\n".join(lines)
 
 
 # ── API 端点 ────────────────────

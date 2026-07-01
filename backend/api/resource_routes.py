@@ -1073,12 +1073,66 @@ async def export_docx(request: ExportDocxRequest):
         raise HTTPException(status_code=400, detail="内容不能为空")
 
     # 生成 Word 文档
+    from docx import Document
+    from docx.shared import Pt, Inches, RGBColor, Cm
+    from docx.enum.table import WD_TABLE_ALIGNMENT
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+
     doc = Document()
     doc.add_heading(request.title or "EvoGen 文档", level=0)
 
-    # 解析 Markdown 风格格式
-    for line in content.split("\n"):
+    # 设置默认字体
+    style = doc.styles['Normal']
+    font = style.font
+    font.name = 'Microsoft YaHei'
+    font.size = Pt(10.5)
+
+    # 解析 Markdown — 支持表格、列表、标题、加粗
+    lines = content.split("\n")
+    i = 0
+    while i < len(lines):
+        line = lines[i]
         line_stripped = line.strip()
+
+        # 跳过代码块分隔符
+        if line_stripped.startswith("```"):
+            i += 1
+            continue
+
+        # 表格：检测 |---|---|---| 分隔行
+        if "|" in line_stripped and i + 1 < len(lines) and "---" in lines[i + 1]:
+            headers = [h.strip().strip("**") for h in line_stripped.split("|") if h.strip()]
+            i += 2  # skip separator line
+            rows = []
+            while i < len(lines) and "|" in lines[i]:
+                cells = [c.strip().strip("**") for c in lines[i].split("|") if c.strip()]
+                if cells:
+                    rows.append(cells)
+                i += 1
+            if headers:
+                table = doc.add_table(rows=1 + len(rows), cols=len(headers))
+                table.style = 'Table Grid'
+                table.alignment = WD_TABLE_ALIGNMENT.CENTER
+                # 表头
+                for ci, h in enumerate(headers):
+                    cell = table.rows[0].cells[ci]
+                    cell.text = h
+                    for p in cell.paragraphs:
+                        for r in p.runs:
+                            r.bold = True
+                            r.font.size = Pt(9)
+                # 数据行
+                for ri, row in enumerate(rows):
+                    for ci, val in enumerate(row):
+                        if ci < len(headers):
+                            cell = table.rows[ri + 1].cells[ci]
+                            cell.text = val
+                            for p in cell.paragraphs:
+                                for r in p.runs:
+                                    r.font.size = Pt(9)
+                doc.add_paragraph("")  # 表后空行
+                i += 1
+                continue
 
         # 标题
         if line_stripped.startswith("### "):
@@ -1088,13 +1142,22 @@ async def export_docx(request: ExportDocxRequest):
         elif line_stripped.startswith("# "):
             doc.add_heading(line_stripped[2:], level=1)
         elif line_stripped.startswith("- ") or line_stripped.startswith("* "):
-            p = doc.add_paragraph(line_stripped[2:], style="List Bullet")
-        elif line_stripped.startswith("```"):
-            continue  # skip code fences
+            doc.add_paragraph(line_stripped[2:], style="List Bullet")
         elif line_stripped:
-            doc.add_paragraph(line_stripped)
+            # 普通段落 — 支持行内加粗 **text**
+            para = doc.add_paragraph()
+            import re as _re
+            parts = _re.split(r"(\*\*[^*]+\*\*)", line_stripped)
+            for part in parts:
+                if part.startswith("**") and part.endswith("**"):
+                    run = para.add_run(part[2:-2])
+                    run.bold = True
+                else:
+                    para.add_run(part)
         else:
             doc.add_paragraph("")  # blank line
+
+        i += 1
 
     # 输出到 BytesIO
     buffer = BytesIO()

@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Highlight, themes } from 'prism-react-renderer';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { Code2, Image, FileText, PanelRightClose, PanelRightOpen, X, ChevronDown, Download, BookOpen } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -305,46 +307,30 @@ export function ArtifactPanel() {
                     </div>
                   )}
 
-                  {/* Content — code with Prism syntax highlighting */}
-                  {(activeTab === 'code' || activeTab === 'doc') && (
+                  {/* Content — doc: render markdown with ReactMarkdown */}
+                  {activeTab === 'doc' && (
                     <div
                       className={cn(
                         'overflow-hidden transition-all duration-300',
-                        activeTab === 'code'
-                          ? (isExpanded ? 'max-h-[600px]' : 'max-h-[100px]')
-                          : (isExpanded ? 'max-h-[400px]' : 'max-h-[80px]'),
+                        isExpanded ? 'max-h-[600px]' : 'max-h-[100px]',
                       )}
                     >
-                      <Highlight
-                        theme={isDark ? themes.nightOwl : themes.github}
-                        code={artifact.content}
-                        language={lang as any}
+                      <div
+                        className="prose prose-sm max-w-none p-3 rounded-b-lg overflow-y-auto"
+                        style={{
+                          background: 'var(--color-bg-tertiary)',
+                          border: '1px solid var(--color-border)',
+                          borderTop: 'none',
+                          borderRadius: '0 0 8px 8px',
+                          maxHeight: isExpanded ? '580px' : '80px',
+                        }}
                       >
-                        {({ tokens, getLineProps, getTokenProps }) => (
-                          <pre
-                            className={cn(
-                              'text-[11px] leading-relaxed overflow-x-auto m-0 rounded-b-lg',
-                              activeTab === 'doc' && 'whitespace-pre-wrap',
-                            )}
-                            style={{
-                              background: 'var(--color-code-bg)',
-                              padding: '12px',
-                              fontFamily: 'var(--font-mono)',
-                              border: '1px solid var(--color-code-border)',
-                              borderTop: 'none',
-                              borderRadius: '0 0 8px 8px',
-                            }}
-                          >
-                            {tokens.map((line, i) => (
-                              <div key={i} {...getLineProps({ line })}>
-                                {line.map((token, key) => (
-                                  <span key={key} {...getTokenProps({ token })} />
-                                ))}
-                              </div>
-                            ))}
-                          </pre>
-                        )}
-                      </Highlight>
+                        <ReactMarkdown
+                          remarkPlugins={[remarkGfm]}
+                        >
+                          {artifact.content}
+                        </ReactMarkdown>
+                      </div>
                     </div>
                   )}
 

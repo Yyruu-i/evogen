@@ -490,16 +490,16 @@ async def get_global_stats(user_id: str = Depends(get_current_user)):
     from backend.db.connection import get_db
     db = get_db()
 
-    # 扫描记录统计
+    # 扫描记录统计（从 tool_history 表获取）
     scan_stats = {"port_scan": 0, "vuln_scan": 0, "rkhunter_scan": 0, "chkrootkit_scan": 0}
     total_scans = 0
     total_failures = 0
     
-    # scan_records 表可能不存在，用 try
+    # tool_history 表可能不存在，用 try
     try:
-        db.execute("SELECT 1 FROM scan_records LIMIT 1")
+        db.execute("SELECT 1 FROM tool_history LIMIT 1")
         rows = db.execute(
-            "SELECT tool_name, result_summary FROM scan_records WHERE user_id = ?",
+            "SELECT tool_name, success FROM tool_history WHERE user_id = ?",
             (user_id,),
         ).fetchall()
         for r in rows:
@@ -507,6 +507,8 @@ async def get_global_stats(user_id: str = Depends(get_current_user)):
             if tool in scan_stats:
                 scan_stats[tool] += 1
                 total_scans += 1
+            if not r["success"]:
+                total_failures += 1
     except Exception:
         pass
 

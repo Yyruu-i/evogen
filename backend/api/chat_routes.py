@@ -437,13 +437,20 @@ async def _detect_complex_task(message: str) -> dict:
         "temperature": 0.1,
         "max_tokens": 1024,
     }
+    # deepseek-v4-pro 需要 reasoning_effort
+    if _get_current_model() == "deepseek-v4-pro":
+        payload["reasoning_effort"] = "low"
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(url, json=payload, headers=headers)
             if resp.status_code != 200:
                 return {"is_complex": False}
             data = resp.json()
-            content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            msg = data.get("choices", [{}])[0].get("message", {})
+            content = msg.get("content", "")
+            # 推理模型可能把 JSON 放在 reasoning_content 里
+            if not content:
+                content = msg.get("reasoning_content", "")
             # 提取 JSON
             json_match = re.search(r'\{.*\}', content, re.DOTALL)
             if json_match:
@@ -528,7 +535,7 @@ async def _subtask_tool_loop(prompt: str, session_id: str, user_id: str, tools: 
     }
 
     messages: list[dict] = [
-        {"role": "system", "content": "你是 EvoGen 的安全检测子Agent。请使用中文回复。"},
+        {"role": "system", "content": "你是 EvoGen 的安全检测子Agent。请使用中文回复。\n⚠️ 关键约束：只执行【1次】工具调用。如果默认端口（如 SimpleHelp=5060, SSH=22, HTTP=80/443）没扫到服务，直接给出结论并返回，不要继续扫描更多端口！"},
         {"role": "user", "content": prompt},
     ]
 
@@ -542,6 +549,8 @@ async def _subtask_tool_loop(prompt: str, session_id: str, user_id: str, tools: 
             "temperature": 0.3,
             "max_tokens": 4096,
         }
+        if _get_current_model() == "deepseek-v4-pro":
+            payload["reasoning_effort"] = "low"
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
@@ -551,13 +560,16 @@ async def _subtask_tool_loop(prompt: str, session_id: str, user_id: str, tools: 
                 resp = await client.post(url, json=payload, headers=headers)
                 if resp.status_code != 200:
                     error_detail = await resp.aread()
-                    logger.error(f"Subtask LLM error: {resp.status_code} {error_detail.decode()[:300]}")
-                    return accumulated_text + f"\n（LLM调用失败: HTTP {resp.status_code}）"
+                    error_text = error_detail.decode()[:500]
+                    logger.error(f"Subtask LLM error: {resp.status_code} {error_text}")
+                    logger.error(f"Subtask payload model={payload.get('model')} tools={bool(payload.get('tools'))} msg_count={len(payload.get('messages',[]))}")
+                    return accumulated_text + f"\n（LLM调用失败: HTTP {resp.status_code} — {error_text[:100]}）"
 
                 data = resp.json()
                 msg = data.get("choices", [{}])[0].get("message", {})
                 content = msg.get("content", "")
                 tool_calls = msg.get("tool_calls")
+                reasoning_content = msg.get("reasoning_content")
 
                 # 情况1: 有工具调用 → 执行工具
                 if tool_calls:
@@ -596,8 +608,8 @@ async def _subtask_tool_loop(prompt: str, session_id: str, user_id: str, tools: 
                             user_id=user_id,
                         )
 
-                        # 追加到 messages
-                        messages.append({
+                        # 追加 assistant 消息（带 reasoning_content，推理模型必须回传）
+                        assistant_msg = {
                             "role": "assistant",
                             "content": "",
                             "tool_calls": [{
@@ -608,7 +620,10 @@ async def _subtask_tool_loop(prompt: str, session_id: str, user_id: str, tools: 
                                     "arguments": json.dumps(tool_args, ensure_ascii=False),
                                 },
                             }],
-                        })
+                        }
+                        if reasoning_content:
+                            assistant_msg["reasoning_content"] = reasoning_content
+                        messages.append(assistant_msg)
                         messages.append({
                             "role": "tool",
                             "tool_call_id": tool_call_id,
@@ -1803,23 +1818,17 @@ async def _tool_loop_stream_generator(
         full_text_response = "⚠️ 工具调用达到最大轮数，请简化您的请求。"
         yield f"data: {json.dumps({'chunk': full_text_response})}\n\n"
 
-    # 保存助手回复并记录经验
+    # ── 提取制品（代码块 / 文档 / 表格）（在报告引擎之前，提取LLM原始回复）──
     if full_text_response:
-        _save_message(session_id, "assistant", full_text_response)
-        await _record_experience(session_id, original_message, full_text_response, user_id=user_id)
-
-        # ── 自动提取制品（代码块 / 文档 / 表格）──
         try:
             artifact_count = extract_artifacts_from_text(full_text_response, session_id, user_id=user_id)
             if artifact_count:
                 logger.info(f"Auto-extracted {artifact_count} artifact(s) from LLM response")
-                yield f"data: {json.dumps({'status': 'artifact_extracted', 'count': artifact_count})}\n\n"
+                yield "data: " + json.dumps({"status": "artifact_extracted", "count": artifact_count}) + "\n\n"
         except Exception as e:
             logger.warning(f"Artifact extraction failed: {e}")
 
-    yield "data: [DONE]\\n\\n"
-
-    # ── 安全扫描报告自动生成 ──
+    # ── 安全扫描报告自动生成（替换 full_text_response 为模板引擎内容）──
     if session_scan_data:
         try:
             report = _generate_security_report(session_scan_data, session_id, user_id=user_id)
@@ -1829,13 +1838,14 @@ async def _tool_loop_stream_generator(
                            f"({quality['passed_checks']}/{quality['total_checks']})")
                 if not quality["pass"]:
                     logger.warning(f"Report quality issues: {quality['issues']}")
-                    # 将校验问题追加到报告
                     issues_text = "\n".join(f"- {i}" for i in quality['issues'])
                     quality_note = f"\n\n---\n\n> **⚠️ 数据质量校验提醒**\n> {issues_text}\n> *检查通过率: {quality['passed_checks']}/{quality['total_checks']}*"
                     report += quality_note
-                    if full_text_response:
-                        full_text_response += quality_note
-                        _save_message(session_id, "assistant", full_text_response[len(full_text_response) - len(quality_note):])
+
+                # 替换完整输出（只显示模板报告）
+                report_section = f"## 📋 安全扫描报告\n\n{report}"
+                full_text_response = report_section
+                yield "data: " + json.dumps({"chunk": report_section}) + "\n\n"
 
             # ── 再调报告引擎生成固定模板报告 ──
             port_data = session_scan_data.get("port_scan", {})
@@ -1862,7 +1872,7 @@ async def _tool_loop_stream_generator(
                         "target": target,
                         "scan_time": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
                         "tool_used": " + ".join(tool_names) if tool_names else "自动检测",
-                        "tool_results": report[:500] if report else "无数据",
+                        "tool_results": (report or "")[:500] if 'report' in dir() else "无数据",
                         "vulnerabilities": [],
                         "actions": ["根据扫描结果采取相应加固措施", "定期进行安全扫描"],
                         "open_ports": "",
@@ -1882,8 +1892,18 @@ async def _tool_loop_stream_generator(
                         except Exception:
                             pass
                         logger.info(f"Template engine report generated for {target}")
+                        # 用模板报告替换整个回答内容
+                        full_text_response = f"## 📋 EvoGen 模板引擎报告\n\n{rmd}"
+                        yield f"data: {json.dumps({'chunk': full_text_response})}\n\n"
         except Exception as e:
             logger.warning(f"Report generation failed: {e}")
+
+    # 保存助手回复（含报告引擎替换后的内容）
+    if full_text_response:
+        _save_message(session_id, "assistant", full_text_response)
+        await _record_experience(session_id, original_message, full_text_response, user_id=user_id)
+
+    yield "data: [DONE]\n\n"
 
 
 def _recommend_tools(query: str, user_id: str = "default") -> str:
@@ -2584,23 +2604,10 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
             # 通知前端：开始汇总
             yield f"data: {json.dumps({'status': 'summarizing', 'message': '正在汇总子任务结果…'})}\n\n"
 
-            # 汇总结果
+            # 汇总结果（仅当报告引擎未覆盖时使用）
             summary = await _generate_summary(message, subtask_text)
 
-            # 流式输出汇总结果
-            _save_message(session_id, "assistant", summary)
-            await _record_experience(session_id, message, summary, user_id=user_id)
-
-            # ── 自动提取制品（让总结中的报告在制品面板可见） ──
-            try:
-                artifact_count = extract_artifacts_from_text(summary, session_id, user_id=user_id)
-                if artifact_count:
-                    logger.info(f"Auto-extracted {artifact_count} artifact(s) from task summary")
-                    yield f"data: {json.dumps({'status': 'artifact_extracted', 'count': artifact_count})}\n\n"
-            except Exception as e:
-                logger.warning(f"Artifact extraction from summary failed: {e}")
-
-            # ── 安全检测报告引擎（独立追加在汇总后，不受LLM摘要影响） ──
+            # ── 安全检测报告引擎（完全替换回答内容） ──
             try:
                 subtask_names = " ".join(s.get("name", "") + " " + s.get("description", "") for s in subtasks)
                 scan_kw = ["port_scan", "vuln_scan", "nmap", "nuclei", "rkhunter", "clamav",
@@ -2637,18 +2644,23 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
                                                    session_id=session_id, user_id=user_id)
                                 except Exception:
                                     pass
-                                # 追加到输出文本
-                                report_block = f"\n\n---\n\n## 📋 EvoGen 安全检测报告（模板引擎生成）\n\n{rmd}"
-                                summary += report_block
-                                yield f"data: {json.dumps({'chunk': report_block})}\n\n"
+                                # 直接用模板报告替换整个回答内容（覆盖LLM摘要）
+                                summary = f"""## 📋 EvoGen 安全检测报告（模板引擎生成）
+
+{rmd}"""
+                                logger.info(f"REPORT ENGINE: replaced summary with template report ({len(summary)} chars)")
             except Exception as e:
                 logger.warning(f"Subtask report engine in summary failed: {e}")
 
+            # 保存助手回复（含报告引擎追加的内容）并记录经验
+            _save_message(session_id, "assistant", summary)
+            await _record_experience(session_id, message, summary, user_id=user_id)
+
             # 流式输出
             for i in range(0, len(summary), 30):
-                yield f"data: {json.dumps({'chunk': summary[i:i+30]})}\\n\\n"
+                yield "data: " + json.dumps({"chunk": summary[i:i+30]}) + "\n\n"
                 await asyncio.sleep(0.005)
-            yield "data: [DONE]\\n\\n"
+            yield "data: [DONE]\n\n"
             return
         else:
             yield f"data: {json.dumps({'status': 'skip_decompose', 'message': '简单任务，直接处理'})}\\n\\n"

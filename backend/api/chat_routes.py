@@ -232,8 +232,24 @@ ALL_TOOLS: list[dict] = BROWSER_TOOLS + [
             },
         },
     },
+    # ── 病毒扫描类 ──
+    {
+        "type": "function",
+        "function": {
+            "name": "clamav_scan",
+            "description": "[ClamAV] 病毒/恶意软件扫描 — 扫描指定目录或文件中的病毒、木马、恶意代码",
+            "vendor": "clamav.net (Cisco)",
+            "purpose": "恶意文件检测 / 病毒查杀",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "要扫描的目录或文件路径，默认 /root"},
+                    "recursive": {"type": "boolean", "description": "是否递归扫描子目录，默认 true"},
+                },
+            },
+        },
+    },
 ]
-
 # ── 自定义工具动态合并 ──
 
 _CUSTOM_TOOLS_CACHE: dict[str, list[dict]] = {}
@@ -1074,7 +1090,13 @@ async def _execute_tool(tool_name: str, arguments: dict, session_id: str, user_i
             except subprocess.TimeoutExpired:
                 return "❌ rkhunter 执行超时（>120s）"
             except Exception as e:
-                return f"❌ rkhunter 执行失败: {str(e)[:200]}"
+                # rkhunter 失败 → 自动切换 chkrootkit
+                try:
+                    fb_cmd = ["chkrootkit", "-q"]
+                    fb_result = subprocess.run(fb_cmd, capture_output=True, text=True, timeout=60)
+                    return f"⚠️ rkhunter 执行失败，已自动切换至 chkrootkit:\n{fb_result.stdout[:1000]}"
+                except Exception:
+                    return f"❌ rkhunter 执行失败: {str(e)[:200]}"
 
         elif tool_name == "chkrootkit_scan":
             quick = arguments.get("quick", True)
@@ -1094,7 +1116,39 @@ async def _execute_tool(tool_name: str, arguments: dict, session_id: str, user_i
             except subprocess.TimeoutExpired:
                 return "❌ chkrootkit 执行超时（>120s）"
             except Exception as e:
-                return f"❌ chkrootkit 执行失败: {str(e)[:200]}"
+                # chkrootkit 失败 → 自动切换 rkhunter
+                try:
+                    fb_cmd = ["rkhunter", "--check", "--skip-keypress", "--no-summary", "--quick"]
+                    fb_result = subprocess.run(fb_cmd, capture_output=True, text=True, timeout=60)
+                    return f"⚠️ chkrootkit 执行失败，已自动切换至 rkhunter:\n{fb_result.stdout[:1000]}"
+                except Exception:
+                    return f"❌ chkrootkit 执行失败: {str(e)[:200]}"
+
+        # ── 病毒扫描 ──
+        elif tool_name == "clamav_scan":
+            target = arguments.get("target", "/root")
+            recursive = arguments.get("recursive", True)
+            try:
+                cmd = ["clamscan"]
+                if recursive:
+                    cmd.append("-r")
+                cmd.append(target)
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+                if result.returncode in (0, 1):  # 0=clean, 1=found
+                    lines = result.stdout.strip().split("\n")
+                    summary_lines = [l for l in lines if any(kw in l for kw in ["Infected", "Scanned", "Known viruses"])]
+                    summary = "\n".join(summary_lines) if summary_lines else result.stdout[:1000]
+                    infected = result.stdout.count("FOUND")
+                    status = "发现威胁" if infected > 0 else "未发现威胁"
+                    return f"✅ ClamAV 扫描完成 — {status}\n{summary}"
+                else:
+                    return f"⚠️ ClamAV 扫描异常 (exit {result.returncode}): {result.stderr[:500]}"
+            except subprocess.TimeoutExpired:
+                return "❌ ClamAV 扫描超时（>300s）"
+            except FileNotFoundError:
+                return "⚠️ ClamAV (clamscan) 未安装，请先 apt install clamav"
+            except Exception as e:
+                return f"❌ ClamAV 扫描失败: {str(e)[:200]}"
 
         else:
             # ── 自定义工具执行（HTTP 端点）──

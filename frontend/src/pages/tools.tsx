@@ -272,6 +272,64 @@ export function ToolsPage() {
           <span>{tools.filter(t => t.scope === 'user').length} 个自定义</span>
         </div>
 
+        {/* Batch Update */}
+        <div
+          className="rounded-xl p-3 mb-4 flex items-center justify-between"
+          style={{
+            background: 'rgba(184,192,255,0.04)',
+            border: '1px solid rgba(184,192,255,0.08)',
+          }}
+        >
+          <div className="flex items-center gap-2">
+            <div className="w-6 h-6 rounded flex items-center justify-center" style={{ background: 'rgba(184,192,255,0.08)' }}>
+              <Terminal className="w-3.5 h-3.5" style={{ color: 'var(--color-holo)' }} />
+            </div>
+            <span className="text-[12px]" style={{ color: 'var(--color-text-secondary)' }}>智能更新</span>
+            <span className="text-[10px] text-muted">检测并批量升级工具/技能/知识库</span>
+          </div>
+          <div className="flex gap-1.5">
+            <button
+              className="flex items-center gap-1 px-3 py-1.5 text-[11px] font-medium rounded-lg transition-all hover:opacity-80"
+              style={{
+                background: 'rgba(184,192,255,0.08)',
+                color: 'var(--color-holo)',
+              }}
+              onClick={async () => {
+                try {
+                  const data = await apiRequest<{ ok: boolean; data: { message: string; before: string; after: string; changelog: string[] } }>('/tools/repo/status');
+                  alert(`📋 工具仓库状态\n版本: ${data.version || '未知'}\n工具数: ${data.tool_count || '未知'}\n最后更新: ${data.last_update || '未知'}`);
+                } catch (e: any) {
+                  alert(`检查失败: ${e.message}`);
+                }
+              }}
+            >
+              检查状态
+            </button>
+            <button
+              className="flex items-center gap-1 px-3 py-1.5 text-[11px] font-medium rounded-lg transition-all hover:opacity-80"
+              style={{
+                background: 'rgba(0,255,136,0.08)',
+                color: 'var(--color-mint)',
+              }}
+              onClick={async () => {
+                try {
+                  const data = await apiRequest<{ message: string; updated: boolean; before: string; after: string; changelog: string[] }>('/tools/update', { method: 'POST', body: JSON.stringify({ version: 'latest' }) });
+                  if (data.updated) {
+                    alert(`✅ 更新完成\n${data.message}\n${data.before} → ${data.after}\n\n变更:\n${(data.changelog || []).join('\n')}`);
+                  } else {
+                    alert(`ℹ️ ${data.message}`);
+                  }
+                  fetchTools();
+                } catch (e: any) {
+                  alert(`❌ 更新失败: ${e.message}`);
+                }
+              }}
+            >
+              执行更新
+            </button>
+          </div>
+        </div>
+
         {/* Error */}
         {error && (
           <div className="bg-danger/10 text-danger text-[13px] p-3 rounded-lg mb-4">{error}</div>

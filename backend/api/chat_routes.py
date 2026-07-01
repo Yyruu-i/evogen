@@ -755,7 +755,7 @@ async def _run_subtasks_concurrent(subtasks: list[dict], original_message: str, 
                             logger.info("Security report stored as artifact for panel display")
                         except Exception as artifact_e:
                             logger.warning(f"Failed to store report artifact: {artifact_e}")
-                        parts.append(f"\n\n---\n\n## 📋 EvoGen 安全检测报告（模板引擎生成）\n\n{report_md}")
+
         except Exception as e:
             logger.warning(f"Subtask security report generation failed: {e}")
 

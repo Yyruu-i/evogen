@@ -1373,7 +1373,11 @@ async def _execute_tool(tool_name: str, arguments: dict, session_id: str, user_i
                 lines = output.strip().split("\n")
                 info_lines = [l for l in lines if any(kw in l for kw in ["Warning", "Infected", "Rootkit", "System checks"])]
                 summary = "\n".join(info_lines[-30:]) if info_lines else output[:1500]
-                return f"✅ rkhunter 执行完成\n{summary}"
+                result_text = f"✅ rkhunter 执行完成\n{summary}"
+                _record_scan_execution(session_id, tool_name, "localhost",
+                    arguments, result_text, findings_count=len(info_lines),
+                    user_id=user_id)
+                return result_text
             except subprocess.TimeoutExpired:
                 return "❌ rkhunter 执行超时（>120s）"
             except Exception as e:
@@ -1399,7 +1403,12 @@ async def _execute_tool(tool_name: str, arguments: dict, session_id: str, user_i
                     summary = "\n".join(infected_lines)
                 else:
                     summary = output[:1500] if output else "未发现异常"
-                return f"✅ chkrootkit 执行完成\n{summary}"
+                result_text = f"✅ chkrootkit 执行完成\n{summary}"
+                infected_count = len([l for l in output.split("\n") if "INFECTED" in l.upper()])
+                _record_scan_execution(session_id, tool_name, "localhost",
+                    arguments, result_text, findings_count=infected_count,
+                    user_id=user_id)
+                return result_text
             except subprocess.TimeoutExpired:
                 return "❌ chkrootkit 执行超时（>120s）"
             except Exception as e:
@@ -1427,7 +1436,11 @@ async def _execute_tool(tool_name: str, arguments: dict, session_id: str, user_i
                     summary = "\n".join(summary_lines) if summary_lines else result.stdout[:1000]
                     infected = result.stdout.count("FOUND")
                     status = "发现威胁" if infected > 0 else "未发现威胁"
-                    return f"✅ ClamAV 扫描完成 — {status}\n{summary}"
+                    result_text = f"✅ ClamAV 扫描完成 — {status}\n{summary}"
+                    _record_scan_execution(session_id, tool_name, target,
+                        arguments, result_text, findings_count=infected,
+                        user_id=user_id)
+                    return result_text
                 else:
                     return f"⚠️ ClamAV 扫描异常 (exit {result.returncode}): {result.stderr[:500]}"
             except subprocess.TimeoutExpired:

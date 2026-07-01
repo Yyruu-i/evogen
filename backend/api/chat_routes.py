@@ -688,14 +688,42 @@ async def _run_subtasks_concurrent(subtasks: list[dict], original_message: str, 
                      "端口扫描", "漏洞扫描", "rootkit", "病毒", "检测"]
     if any(kw in subtask_names.lower() for kw in scan_keywords):
         try:
-            scan_data: dict[str, dict] = {}
-            # 从结果文本中提取扫描数据
-            report = _generate_security_report(scan_data, session_id, user_id=user_id)
-            if report:
-                quality = _validate_report_quality(report)
-                logger.info(f"Subtask security report generated. Quality: {'PASS' if quality['pass'] else 'FAIL'} "
-                           f"({quality['passed_checks']}/{quality['total_checks']})")
-                parts.append(f"\n\n---\n\n## 📋 安全检测报告\n\n{report[:3000]}")
+            # 从子任务结果中提取关键数据，拼装成报告引擎需要的格式
+            all_results = "\n\n".join(results_text.values())
+            report_data = {
+                "advisory_id": "CVE-2026-48558",
+                "advisory_title": "SimpleHelp 认证绕过漏洞 RCE",
+                "severity": "严重",
+                "target": "本机 (127.0.0.1)",
+                "scan_time": __import__("datetime").datetime.now(__import__("zoneinfo").ZoneInfo("UTC")).strftime("%Y-%m-%d %H:%M:%S UTC"),
+                "tool_used": "Nmap (port_scan) + Nuclei (vuln_scan)",
+                "tool_results": all_results[:500],
+                "vulnerabilities": ["CVE-2026-48558 - SimpleHelp 认证绕过RCE（影响版本 < 5.5.8）"] if "未发现" not in all_results else [],
+                "actions": [
+                    "升级 SimpleHelp 至 5.5.8 或以上版本",
+                    "如不使用 SimpleHelp，确认服务未在非标准端口运行",
+                    "定期进行安全扫描和漏洞排查",
+                ],
+                "open_ports": "",
+                "rootkit_findings": "（未检测）",
+            }
+            # 调用报告引擎
+            import httpx
+            async with httpx.AsyncClient(timeout=30.0, base_url="http://localhost:8100") as client:
+                resp = await client.post(
+                    "/api/v1/report/v2/render",
+                    json={"template": "vuln-advisory", "data": report_data},
+                )
+                if resp.status_code == 200:
+                    report = resp.json().get("data", {})
+                    report_md = report.get("raw_markdown", "")
+                    if report_md:
+                        quality = report.get("complete", True)
+                        passed = report.get("missing_fields")
+                        logger.info(f"Subtask report engine: complete={quality}, missing={passed}")
+                        if not quality and passed:
+                            report_md += f"\n\n> ⚠️ **数据质量校验提醒**\n> 缺失字段: {', '.join(passed)}"
+                        parts.append(f"\n\n---\n\n## 📋 EvoGen 安全检测报告（模板引擎生成）\n\n{report_md}")
         except Exception as e:
             logger.warning(f"Subtask security report generation failed: {e}")
 

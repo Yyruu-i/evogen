@@ -18,6 +18,7 @@ import {
   Cpu,
   Zap,
   LogOut,
+  BarChartBig,
 } from 'lucide-react';
 import { ThemeToggle } from '@/components/shared/theme-toggle';
 import { useSessions } from '@/hooks/use-sessions';
@@ -91,6 +92,7 @@ export function Sidebar() {
       label: '系统',
       icon: Settings,
       items: [
+        { to: '/stats', icon: BarChartBig, label: '统计' },
         { to: '/settings/models', icon: Settings, label: '设置' },
       ],
     },

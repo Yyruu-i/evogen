@@ -31,6 +31,7 @@ import { SettingsPage } from '@/pages/settings';
 import { SettingsModelsPage } from '@/pages/settings-models';
 import { SettingsPlatformsPage } from '@/pages/settings-platforms';
 import { SettingsSystemPage } from '@/pages/settings-system';
+import { StatsPage } from '@/pages/stats';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -110,6 +111,9 @@ function AppRoutes() {
 
         {/* Tools */}
         <Route path="tools" element={<ToolsPage />} />
+
+        {/* Stats */}
+        <Route path="stats" element={<StatsPage />} />
 
         {/* Knowledge */}
         <Route path="knowledge" element={<KnowledgePage />} />

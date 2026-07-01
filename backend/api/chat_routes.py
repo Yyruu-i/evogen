@@ -2643,7 +2643,7 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
                         "target": "本机 (127.0.0.1)",
                         "scan_time": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
                         "tool_used": "Nmap (port_scan) + Nuclei (vuln_scan)",
-                        "tool_results": sub_results_text[:500],
+                        "tool_results": sub_results_text[:2000],
                         "vulnerabilities": vulnerabilities or ["CVE-2026-48558 - SimpleHelp 认证绕过漏洞(RCE)（🔴 未确认）"],
                         "actions": ["升级 SimpleHelp 至 5.5.8 以上版本", "如无使用请确认服务不在非标准端口"],
                         "open_ports": "",

@@ -10,7 +10,7 @@ interface ChatState {
 
 interface ChatContextType {
   state: ChatState;
-  setMessages: (msgs: ChatMsg[]) => void;
+  setMessages: (msgs: ChatMsg[] | ((prev: ChatMsg[]) => ChatMsg[])) => void;
   setStreaming: (v: boolean) => void;
   setActiveSession: (id: string) => void;
   updateLastAssistant: (chunk: string, prefix: string) => void;
@@ -24,8 +24,8 @@ const ChatContext = createContext<ChatContextType | null>(null);
 export function ChatProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<ChatState>({ messages: [], streaming: false, activeSessionId: '' });
 
-  const setMessages = useCallback((msgs: ChatMsg[]) => {
-    setState((prev) => ({ ...prev, messages: msgs }));
+  const setMessages = useCallback((msgs: ChatMsg[] | ((prev: ChatMsg[]) => ChatMsg[])) => {
+    setState((prev) => ({ ...prev, messages: typeof msgs === 'function' ? msgs(prev.messages) : msgs }));
   }, []);
 
   const setStreaming = useCallback((v: boolean) => {
@@ -40,6 +40,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     setState((prev) => {
       const msgs = prev.messages;
       const last = msgs[msgs.length - 1];
+      // 如果最后一条是 thinking 占位，替换掉它
+      if (last?.role === 'assistant' && last.id.startsWith('thinking-')) {
+        return { ...prev, messages: [...msgs.slice(0, -1), { id: `${prefix}${Date.now()}`, role: 'assistant', content: chunk, timestamp: new Date().toISOString() }] };
+      }
       if (last?.role === 'assistant' && last.id.startsWith(prefix)) {
         return { ...prev, messages: [...msgs.slice(0, -1), { ...last, content: last.content + chunk }] };
       }

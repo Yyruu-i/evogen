@@ -10,6 +10,7 @@ import { useWsStatus } from '@/context/ws-context';
 import { MessageBubble } from '@/components/chat/message-bubble';
 import { ChatInput } from '@/components/chat/chat-input';
 import { WelcomeEmpty } from '@/components/chat/welcome-empty';
+import { ThinkingBubble } from '@/components/chat/thinking-bubble';
 import type { ChatMsg, WsAgentEvent } from '@/types';
 
 export function ChatPage() {
@@ -84,8 +85,9 @@ export function ChatPage() {
     const text = input.trim();
     if (!text || streamingRef.current) return;
     const userMsg: ChatMsg = { id: generateId(), role: 'user', content: text, timestamp: new Date().toISOString() };
-    const currentMsgs = chat.messages;
-    setMessages([...currentMsgs, userMsg]);
+    // 立即插入思考中的占位消息（v4 模型用【思考过程】标签标识，chat 模型无思考）
+    const thinkingMsg: ChatMsg = { id: 'thinking-' + Date.now(), role: 'assistant', content: '', timestamp: new Date().toISOString() };
+    setMessages([...chat.messages, userMsg, thinkingMsg]);
     setInput('');
     streamingRef.current = true;
     setStreamingUi(true);
@@ -108,8 +110,8 @@ export function ChatPage() {
     const text = content.trim();
     if (!text || streamingRef.current) return;
     const userMsg: ChatMsg = { id: generateId(), role: 'user', content: text, timestamp: new Date().toISOString() };
-    const currentMsgs = chat.messages;
-    setMessages([...currentMsgs, userMsg]);
+    const thinkingMsg: ChatMsg = { id: 'thinking-' + Date.now(), role: 'assistant', content: '', timestamp: new Date().toISOString() };
+    setMessages([...chat.messages, userMsg, thinkingMsg]);
     streamingRef.current = true;
     setStreamingUi(true);
 
@@ -135,6 +137,8 @@ export function ChatPage() {
   setReasoningRef.current = setReasoning;
   const setSearchParamsRef = useRef(setSearchParams);
   setSearchParamsRef.current = setSearchParams;
+  const setMessagesRef = useRef(setMessages);
+  setMessagesRef.current = setMessages;
 
   const sendMessageAndStream = useCallback(async (text: string, activeId: string) => {
     const B = window.location.origin;
@@ -187,6 +191,8 @@ export function ChatPage() {
     }
 
     finalizeLastAssistantRef.current();
+    // 清理可能的 thinking 占位（后端没返回任何内容的情况）
+    setMessagesRef.current(prev => prev.filter(m => !m.id.startsWith('thinking-')));
     if (pendingSessionRef.current) {
       setSearchParamsRef.current({ session: pendingSessionRef.current });
       pendingSessionRef.current = null;
@@ -207,6 +213,8 @@ export function ChatPage() {
     streamingRef.current = false;
     setStreamingUi(false);
     setStreaming(false);
+    // 先清理 thinking 占位消息，再 finalize（避免把 thinking 当 streaming 消息处理）
+    setMessages(prev => prev.filter(m => !m.id.startsWith('thinking-')));
     finalizeLastAssistant();
   }, [finalizeLastAssistant, setStreaming]);
 
@@ -278,6 +286,10 @@ export function ChatPage() {
               ) : (
                 chat.messages.map((msg) => {
                   const isStreaming = msg.id.startsWith('streaming-') || msg.id.startsWith('sse-');
+                  const isThinkingMsg = msg.id.startsWith('thinking-');
+                  if (isThinkingMsg) {
+                    return <ThinkingBubble key={msg.id} />;
+                  }
                   return (
                     <MessageBubble
                       key={msg.id}

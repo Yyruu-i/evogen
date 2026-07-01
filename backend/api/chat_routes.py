@@ -401,12 +401,19 @@ SUBTASK_DETECTION_PROMPT = """你是一个任务规划专家。请分析用户�
 - "帮我查一下今天的天气" → 简单任务
 - "帮我写一个 Python 脚本解析 CSV 文件并生成报告" → 复杂任务（解析+生成报告可拆分）
 - "帮我扫描127.0.0.1的端口然后做漏洞检测" → 复杂任务，port_scan 依赖完成后才能 vuln_scan
+- "CVE-2026-48558 SimpleHelp认证绕过漏洞，请检测本机" → 复杂任务，需要先端口扫描确认服务再漏洞检测
 
 如果是复杂任务，请输出 JSON 格式：
 {"is_complex": true, "task_title": "任务标题", "subtasks": [{"id": 1, "name": "子任务名", "description": "子任务描述", "tools": ["port_scan", "vuln_scan"], "depends_on": []}, ...]}
 
-tools字段：该子任务需要的工具列表，可选值有 port_scan, vuln_scan, web_search, browser_navigate, browser_screenshot
+tools字段：该子任务需要的工具列表，可选值有 port_scan, vuln_scan, rkhunter_scan, chkrootkit_scan, clamav_scan, web_search, browser_navigate, browser_screenshot
 depends_on字段：该子任务依赖的其他子任务id列表（空数组表示无依赖）
+必填字段说明：
+- 端口扫描/网络资产发现：tools = ["port_scan"]
+- 漏洞扫描/CVE检测：tools = ["vuln_scan"]
+- Rootkit/后门检测：tools = ["rkhunter_scan", "chkrootkit_scan"]
+- 病毒/恶意文件扫描：tools = ["clamav_scan"]
+- 当需要组合检测时（如先扫端口再扫漏洞），将 port_scan 和 vuln_scan 分别拆为两个子任务并设置 depends_on
 
 如果是简单任务，请输出：
 {"is_complex": false}
@@ -470,6 +477,22 @@ async def _execute_subtask(subtask: dict, user_message: str, session_id: str, us
 
     agent_prompt += "\n请专注于完成您的子任务，输出完整的结果。不要输出多余的元数据信息。"
 
+    # 自动注入安全工具说明（如果子任务名称或描述包含检测相关关键词）
+    subtask_name = (subtask.get("name", "") + " " + subtask.get("description", "")).lower()
+    security_keywords = ["扫描", "检测", "漏洞", "端口", "安全", "rootkit", "病毒",
+                         "scan", "vuln", "port", "check", "检测", "cve"]
+    if any(kw in subtask_name for kw in security_keywords):
+        agent_prompt += (
+            "\n\n## 安全检测工具（你可调用的真实工具）\n"
+            "你必须调用真实工具执行检测，而不是用文字描述。可用的工具：\n"
+            "- `port_scan(target, ports?)`: 端口扫描（nmap），检测开放端口\n"
+            "- `vuln_scan(target, severity?)`: 漏洞扫描（Nuclei），检测已知CVE漏洞\n"
+            "- `rkhunter_scan(check_all?)`: Rootkit检测\n"
+            "- `chkrootkit_scan(quick?)`: chkrootkit检测\n"
+            "- `clamav_scan(target, recursive?)`: 病毒扫描\n"
+            "请立即调用对应工具并返回结果。"
+        )
+
     # 工具隔离：仅为该子 Agent 提供所需的工具
     tool_defs = None
     if tools:
@@ -481,37 +504,132 @@ async def _execute_subtask(subtask: dict, user_message: str, session_id: str, us
                     break
 
     try:
-        content = await _call_llm_for_subtask(agent_prompt, tools=tool_defs)
+        content = await _subtask_tool_loop(agent_prompt, session_id, user_id, tools=tool_defs)
     except Exception as e:
         content = f"⚠️ 子任务执行失败: {str(e)[:200]}"
 
     return f"## 子任务 {subtask['id']}: {subtask['name']}\n\n{content.strip()[:2000]}"
 
 
-async def _call_llm_for_subtask(prompt: str, tools: list[dict] | None = None) -> str:
-    """后备方案：直接调用 LLM 作为子任务执行，支持工具隔离。"""
+# 子任务工具调用最大轮次
+_SUBTASK_MAX_TOOL_ITERATIONS = 5
+
+
+async def _subtask_tool_loop(prompt: str, session_id: str, user_id: str, tools: list[dict] | None = None) -> str:
+    """子Agent工具调用循环：反复调用LLM → 执行工具 → 追加结果，直到LLM返回纯文本或达到最大轮次。
+
+    非流式版本，适用于子任务场景。
+    支持工具隔离（只暴露子任务所需的工具）。
+    """
     url = f"{_get_llm_base_url().rstrip('/')}/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {_get_llm_api_key()}",
         "Content-Type": "application/json",
     }
-    payload = {
-        "model": _get_current_model(),
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.3,
-        "max_tokens": 2048,
-    }
-    if tools:
-        payload["tools"] = tools
-        payload["tool_choice"] = "auto"
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(url, json=payload, headers=headers)
-            if resp.status_code == 200:
-                return resp.json()["choices"][0]["message"]["content"]
-    except Exception as e:
-        logger.warning(f"Subtask LLM call failed: {e}")
-    return "（子任务执行失败）"
+
+    messages: list[dict] = [
+        {"role": "system", "content": "你是 EvoGen 的安全检测子Agent。请使用中文回复。"},
+        {"role": "user", "content": prompt},
+    ]
+
+    tool_fail_count: dict[str, int] = {}
+    accumulated_text = ""
+
+    for iteration in range(_SUBTASK_MAX_TOOL_ITERATIONS):
+        payload = {
+            "model": _get_current_model(),
+            "messages": messages,
+            "temperature": 0.3,
+            "max_tokens": 4096,
+        }
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                resp = await client.post(url, json=payload, headers=headers)
+                if resp.status_code != 200:
+                    error_detail = await resp.aread()
+                    logger.error(f"Subtask LLM error: {resp.status_code} {error_detail.decode()[:300]}")
+                    return accumulated_text + f"\n（LLM调用失败: HTTP {resp.status_code}）"
+
+                data = resp.json()
+                msg = data.get("choices", [{}])[0].get("message", {})
+                content = msg.get("content", "")
+                tool_calls = msg.get("tool_calls")
+
+                # 情况1: 有工具调用 → 执行工具
+                if tool_calls:
+                    for tc in tool_calls:
+                        tool_name = tc.get("function", {}).get("name", "")
+                        tool_call_id = tc.get("id", f"subcall_{iteration}")
+
+                        try:
+                            tool_args = json.loads(tc.get("function", {}).get("arguments", "{}"))
+                        except json.JSONDecodeError:
+                            tool_args = {}
+
+                        logger.info(f"Subtask tool call #{iteration}: {tool_name} args={tool_args}")
+
+                        # 检查工具是否已被禁用
+                        if tool_fail_count.get(tool_name, 0) >= 2:
+                            tool_result = f"⚠️ 工具 {tool_name} 连续执行失败，已自动禁用。"
+                        else:
+                            tool_result = await _execute_tool(tool_name, tool_args, session_id, user_id=user_id)
+
+                        # 失败检测
+                        is_failure = _is_tool_failure(tool_result)
+                        if is_failure:
+                            tool_fail_count[tool_name] = tool_fail_count.get(tool_name, 0) + 1
+                        else:
+                            tool_fail_count[tool_name] = 0
+
+                        # 记录历史
+                        _record_tool_history(
+                            session_id=session_id,
+                            tool_name=tool_name,
+                            tool_args=tool_args,
+                            tool_result_summary=tool_result[:200],
+                            success=not is_failure,
+                            user_message=prompt[:100],
+                            user_id=user_id,
+                        )
+
+                        # 追加到 messages
+                        messages.append({
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [{
+                                "id": tool_call_id,
+                                "type": "function",
+                                "function": {
+                                    "name": tool_name,
+                                    "arguments": json.dumps(tool_args, ensure_ascii=False),
+                                },
+                            }],
+                        })
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call_id,
+                            "content": tool_result,
+                        })
+
+                    continue  # 继续下一轮LLM调用
+
+                # 情况2: 纯文本响应 → 返回
+                if content:
+                    accumulated_text += content
+                    return accumulated_text.strip()
+
+                # 既无工具调用也无内容
+                break
+
+        except Exception as e:
+            logger.warning(f"Subtask LLM call failed: {e}")
+            return accumulated_text.strip() or f"（子任务执行失败: {str(e)[:200]}）"
+
+    return accumulated_text.strip() or "（子任务执行已达到最大轮次）"
 
 
 async def _run_subtasks_concurrent(subtasks: list[dict], original_message: str, session_id: str, user_id: str) -> tuple[str, dict[int, str]]:
@@ -2383,7 +2501,24 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
         "\\n\\n## 可用工具\\n"
         "你可以使用浏览器工具来打开网页、截图、点击元素、填写表单。\\n"
         "当用户说'打开XX网站'、'帮我搜索'、'截图'等时，直接调用对应工具。\\n"
-        "所有工具操作自动执行，无需向用户确认。\\n"
+        "\\n"
+        "## 安全检测工具（重要——请优先使用真实工具，不要仅用文字描述）\\n"
+        "当用户请求安全检测、漏洞扫描、端口扫描、rootkit检查、病毒查杀等内容时，"
+        "你**必须**调用以下真实工具来执行检测，而非仅用文字回复描述。\\n"
+        "\\n"
+        "可调用的安全工具：\\n"
+        "- `port_scan(target, ports?)`: 端口扫描（nmap），检测开放端口和服务版本\\n"
+        "- `vuln_scan(target, severity?)`: 漏洞扫描（Nuclei），检测已知CVE漏洞\\n"
+        "- `rkhunter_scan(check_all?)`: Rootkit检测，检查后门/隐藏文件/内核模块\\n"
+        "- `chkrootkit_scan(quick?)`: chkrootkit检测，互补rkhunter\\n"
+        "- `clamav_scan(target, recursive?)`: 病毒/恶意软件扫描\\n"
+        "\\n"
+        "**工具调用规则（重要）：**\\n"
+        "1. 安全通告类消息（含CVE、漏洞名称、影响版本、供应商等），先调port_scan扫描目标端口，再调vuln_scan检测漏洞\\n"
+        "2. 端口扫描默认1-1000最常用端口，目标用用户指定的IP/域名\\n"
+        "3. 漏洞扫描默认severity=critical,high\\n"
+        "4. 扫描完成后，自动调用报告引擎(v2/render)生成固定模板报告，使用 vuln-advisory 模板\\n"
+        "5. 所有工具调用自动执行，无需向用户确认。\\n"
         "\\n"
         "## 文档生成\\n"
         "你可以直接生成 Markdown 格式的内容（代码块、列表、表格等），"

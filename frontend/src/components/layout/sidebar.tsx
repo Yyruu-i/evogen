@@ -52,7 +52,7 @@ interface NavSection {
 export function Sidebar() {
   const navigate = useNavigate();
   const auth = useAuth();
-  const { data } = useSessions({ limit: 30 });
+  const { data } = useSessions({ limit: 200 });
   const sessions = data?.sessions || [];
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
     agent: true,
@@ -234,7 +234,7 @@ export function Sidebar() {
                 </span>
               </div>
             ) : (
-              sessions.slice(0, 20).map((s) => (
+              sessions.map((s) => (
                 <button
                   key={s.id}
                   onClick={() => navigate(`/chat?session=${s.id}`)}

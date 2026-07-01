@@ -44,7 +44,7 @@ def _row_to_message(row) -> dict:
 
 @router.get("")
 async def list_sessions(
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(200, ge=1, le=9999),
     offset: int = Query(0, ge=0),
     source: Optional[str] = None,
     user_id: str = Depends(get_current_user),
@@ -96,7 +96,7 @@ async def delete_session(session_id: str, user_id: str = Depends(get_current_use
 @router.get("/{session_id}/messages")
 async def list_messages(
     session_id: str,
-    limit: int = Query(100, ge=1, le=500),
+    limit: int = Query(500, ge=1, le=9999),
     offset: int = Query(0, ge=0),
     user_id: str = Depends(get_current_user),
 ):

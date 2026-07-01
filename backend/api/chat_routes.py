@@ -723,6 +723,19 @@ async def _run_subtasks_concurrent(subtasks: list[dict], original_message: str, 
                         logger.info(f"Subtask report engine: complete={quality}, missing={passed}")
                         if not quality and passed:
                             report_md += f"\n\n> ⚠️ **数据质量校验提醒**\n> 缺失字段: {', '.join(passed)}"
+                        # 作为制品存入数据库（让前端制品面板可见）
+                        try:
+                            from backend.api.artifacts_routes import store_artifact
+                            store_artifact(
+                                "doc",
+                                f"安全报告_{report_data['target']}",
+                                report_md,
+                                session_id=session_id,
+                                user_id=user_id,
+                            )
+                            logger.info("Security report stored as artifact for panel display")
+                        except Exception as artifact_e:
+                            logger.warning(f"Failed to store report artifact: {artifact_e}")
                         parts.append(f"\n\n---\n\n## 📋 EvoGen 安全检测报告（模板引擎生成）\n\n{report_md}")
         except Exception as e:
             logger.warning(f"Subtask security report generation failed: {e}")
@@ -2527,6 +2540,15 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
             # 流式输出汇总结果
             _save_message(session_id, "assistant", summary)
             await _record_experience(session_id, message, summary, user_id=user_id)
+
+            # ── 自动提取制品（让总结中的报告在制品面板可见） ──
+            try:
+                artifact_count = extract_artifacts_from_text(summary, session_id, user_id=user_id)
+                if artifact_count:
+                    logger.info(f"Auto-extracted {artifact_count} artifact(s) from task summary")
+                    yield f"data: {json.dumps({'status': 'artifact_extracted', 'count': artifact_count})}\\n\\n"
+            except Exception as e:
+                logger.warning(f"Artifact extraction from summary failed: {e}")
 
             # 流式输出
             for i in range(0, len(summary), 30):

@@ -1365,7 +1365,7 @@ async def _execute_with_failover(
 ) -> str:
     """根据 scan_type 获取 failover 链，依次执行工具，失败后自动切换。
 
-    返回执行结果的汇总文本。
+    返回执行结果的汇总文本，每步用 [编排] 前缀标记，供上层 SSE 解析。
     """
     chain = _FAILOVER_CHAINS.get(scan_type, _FAILOVER_CHAINS.get("security", []))
     if not chain:
@@ -1374,6 +1374,9 @@ async def _execute_with_failover(
     extra_args = extra_args or {}
     results: list[str] = []
     last_error: str | None = None
+    total = len(chain)
+
+    results.append(f"[编排] 📋 编排开始：scan_type={scan_type}，共 {total} 个工具")
 
     for idx, tool_name in enumerate(chain):
         # 构建参数：统一传入 target，合并 extra_args
@@ -1393,6 +1396,10 @@ async def _execute_with_failover(
         if tool_name == "rkhunter_scan":
             args["check_all"] = extra_args.get("check_all", True)
 
+        # 通知：开始执行
+        step_label = f"[{idx + 1}/{total}]"
+        results.append(f"[编排] 🔧 {step_label} {tool_name} 执行中...")
+
         # 执行工具
         try:
             result = await _execute_tool(tool_name, args, session_id, user_id=user_id)
@@ -1402,11 +1409,11 @@ async def _execute_with_failover(
         is_failure = _is_tool_failure(result)
         if is_failure:
             last_error = f"{tool_name} 失败: {result[:100]}"
-            results.append(f"⚠️ [{idx + 1}/{len(chain)}] {tool_name} → 失败，尝试下一个...")
+            results.append(f"[编排] ❌ {step_label} {tool_name} 失败，自动切换到下一个工具")
             continue
         else:
-            results.append(f"✅ [{idx + 1}/{len(chain)}] {tool_name} → 成功\n{result}")
-            # 成功后记录历史，不再继续尝试
+            results.append(f"[编排] ✅ {step_label} {tool_name} 成功")
+            # 成功：记录历史，不再继续尝试
             _record_tool_history(
                 session_id=session_id,
                 tool_name=tool_name,
@@ -1416,10 +1423,13 @@ async def _execute_with_failover(
                 user_message=f"smart_orchestrator:{scan_type}:{target}",
                 user_id=user_id,
             )
+            # 追加工具结果详情
+            results.append(f"[编排] 📊 {step_label} 结果:\n{result}")
             return "\n\n".join(results)
 
     # 全部失败
-    results.append(f"❌ 所有 {len(chain)} 个工具均执行失败\n最后错误: {last_error}")
+    results.append(f"[编排] ❌ 所有 {total} 个工具均执行失败")
+    results.append(f"[编排]   最后错误: {last_error}")
     return "\n\n".join(results)
 
 
@@ -1993,6 +2003,13 @@ async def _tool_loop_stream_generator(
 
                 # 执行工具
                 tool_result = await _execute_tool(tool_name, tool_args, session_id, user_id=user_id)
+
+                # ── 智能编排：展开 failover 链的每一步 ──
+                if tool_name == "smart_orchestrator":
+                    # 从 tool_result 中拆出编排过程的逐步描述
+                    step_lines = [l for l in tool_result.split("\n") if l.startswith("[编排]")]
+                    for step_line in step_lines:
+                        yield f"data: {json.dumps({'status': 'orchestrator_step', 'message': step_line[4:]})}\n\n"
 
                 # 失败检测 + 自动切换逻辑
                 is_failure = _is_tool_failure(tool_result)
@@ -2813,39 +2830,34 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
         "你可以使用浏览器工具来打开网页、截图、点击元素、填写表单。\\n"
         "当用户说'打开XX网站'、'帮我搜索'、'截图'等时，直接调用对应工具。\\n"
         "\\n"
-        "## 安全检测工具（重要——必须使用真实工具，禁止仅用文字描述）\\n"
-        "当用户请求安全检测、漏洞扫描、端口扫描、rootkit检查、病毒查杀等内容时，\\n"
-        "你**必须调用真实工具执行检测**，不得仅输出文字描述代替实际扫描。\\n"
+        "## ⚠️ 安全检测工具（硬性规则——必须遵守）\\n"
+        "当用户请求**安全检测、漏洞扫描、端口扫描、Rootkit检查、病毒查杀、CVE查询**等内容时：\\n"
         "\\n"
-        "### 🛡️ 首选：智能编排工具（推荐）\\n"
-        "对于任何安全检测需求，**优先使用 `smart_orchestrator`**，而非分别调用单个工具。\\n"
+        "### 规则1：必须调 smart_orchestrator（唯一方式）\\n"
+        "**不得逐个调 port_scan/vuln_scan/rkhunter_scan 等单独工具**，也**不得仅输出文字描述代替实际扫描**。\\n"
+        "一律使用 `smart_orchestrator` 这一个工具，传入 target 和 scan_type 即可。\\n"
         "\\n"
-        "`smart_orchestrator` 是一个全自动编排工具，只需传入 2 个参数：\\n"
-        "- `target`（检测目标：IP/域名/文件路径）\\n"
-        "- `scan_type`（检测类型）：\\n"
-        "  - `security` — 全面安全检测（端口扫描+漏洞扫描+Rootkit+病毒扫描，推荐）\\n"
-        "  - `port_scan` — 仅端口扫描（nmap，失败自动切换 Nuclei）\\n"
-        "  - `vuln_scan` — 仅漏洞扫描（Nuclei，失败自动切换 nmap）\\n"
-        "  - `rootkit` — Rootkit 检测（rkhunter，失败切换 chkrootkit）\\n"
-        "  - `malware` — 病毒/恶意文件扫描（ClamAV）\\n"
-        "  - `all` — 全量检测（执行所有安全工具）\\n"
+        "### 规则2：scan_type 选择指南\\n"
+        "- **全面检测**（端口+漏洞+Rootkit）→ `scan_type=\"security\"`（推荐）\\n"
+        "- **仅端口扫描** → `scan_type=\"port_scan\"`\\n"
+        "- **仅漏洞扫描** → `scan_type=\"vuln_scan\"`\\n"
+        "- **仅 Rootkit 检测** → `scan_type=\"rootkit\"`\\n"
+        "- **仅病毒扫描** → `scan_type=\"malware\"`\\n"
         "\\n"
-        "自动特性：\\n"
-        "- 自动按优先级链执行工具，一个失败自动切换下一个\\n"
-        "- 成功后自动生成结构化安全检测报告并存入制品面板\\n"
+        "### 规则3：编排器会自动处理以下事项\\n"
+        "- 按 failover 链执行工具，一个失败自动切换下一个\\n"
+        "- 扫描成功后自动生成结构化安全检测报告并存入制品面板\\n"
+        "- 无需手动调 generate_report\\n"
         "\\n"
-        "调用示例：\\n"
-        "  `smart_orchestrator(target=\"192.168.1.1\", scan_type=\"security\")`\\n"
-        "  `smart_orchestrator(target=\"example.com\", scan_type=\"vuln_scan\", severity=\"critical,high\")`\\n"
+        "调用示例：`smart_orchestrator(target=\"192.168.1.1\", scan_type=\"security\")`\\n"
         "\\n"
-        "### 备选：单个安全工具\\n"
-        "仅在 `smart_orchestrator` 不适用时才分别调用以下工具：\\n"
+        "### 备选（仅当 smart_orchestrator 不适用时）\\n"
+        "以下工具供特殊场景使用：\\n"
         "- `port_scan(target, ports?, arguments?)`: 端口扫描（nmap）\\n"
         "- `vuln_scan(target, severity?, templates?)`: 漏洞扫描（Nuclei）\\n"
         "- `rkhunter_scan(check_all?)`: Rootkit检测\\n"
         "- `chkrootkit_scan(quick?)`: chkrootkit检测\\n"
         "- `clamav_scan(target, recursive?)`: 病毒/恶意软件扫描\\n"
-        "- `generate_report(template, data)`: 报告生成（仅编排器自动调用，一般不需手动调）\\n"
         "\\n"
         "## 文档生成\\n"
         "你可以直接生成 Markdown 格式的内容（代码块、列表、表格等），"

@@ -181,6 +181,13 @@ export function ChatPage() {
             if (parsed.status === 'reasoning' && parsed.content) {
               setReasoningRef.current(parsed.content);
             }
+            // ── 处理智能编排步骤进度 ──
+            if (parsed.status === 'orchestrator_step' && parsed.message) {
+              updateLastAssistantRef.current(
+                '\n> 🛡️ ' + parsed.message,
+                'sse-'
+              );
+            }
           } catch {
             // 非 JSON 数据忽略，不显示到正文
           }

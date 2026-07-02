@@ -278,6 +278,35 @@ ALL_TOOLS: list[dict] = BROWSER_TOOLS + [
             },
         },
     },
+    # ── 智能编排工具 ──
+    {
+        "type": "function",
+        "function": {
+            "name": "smart_orchestrator",
+            "description": "[EvoGen] 智能安全扫描编排 — 自动推荐最适合的检测工具，按优先级执行扫描，失败自动切换备选工具，最后自动生成结构化安全检测报告。一条命令完成全流程。",
+            "vendor": "EvoGen",
+            "purpose": "智能编排 / 一键扫描+报告全流程",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "检测目标，IP 地址、域名或文件路径"},
+                    "scan_type": {
+                        "type": "string",
+                        "description": "检测类型:\n- port_scan: 端口扫描（使用 nmap，失败自动切换 Nuclei）\n- vuln_scan: 漏洞扫描（使用 Nuclei，失败自动切换 nmap）\n- rootkit: Rootkit 检测（先 rkhunter，失败切换 chkrootkit）\n- malware: 恶意文件/病毒扫描（使用 ClamAV）\n- security: 全面安全检测（端口扫描 + 漏洞扫描 + Rootkit 检测，按优先级依次执行）\n- all: 全量检测（执行所有可用安全工具）",
+                        "enum": ["port_scan", "vuln_scan", "rootkit", "malware", "security", "all"],
+                    },
+                    "report_template": {
+                        "type": "string",
+                        "description": "可选：报告模板ID，不传则自动根据 scan_type 推荐模板。可选值：vuln-advisory、port-scan、server-health、code-review、network-topology",
+                        "enum": ["vuln-advisory", "port-scan", "server-health", "code-review", "network-topology"],
+                    },
+                    "ports": {"type": "string", "description": "可选：端口范围，仅 scan_type=port_scan 时生效，如 22,80,443 或 1-1000"},
+                    "severity": {"type": "string", "description": "可选：漏洞严重级别过滤，仅 scan_type=vuln_scan 时生效，如 critical,high,medium"},
+                },
+                "required": ["target", "scan_type"],
+            },
+        },
+    },
 ]
 # ── 自定义工具动态合并 ──
 
@@ -1250,6 +1279,96 @@ def _run_mcp_tool(script_path: str, method: str, arguments: dict) -> str:
         return f"⚠️ MCP 工具异常: {str(e)[:200]}"
 
 
+# ── 智能编排：带 failover 链的工具执行 ──
+
+# 安全工具的 failover 链配置（按 priority 排序，失败后自动走下一个）
+_FAILOVER_CHAINS: dict[str, list[str]] = {
+    "port_scan": ["port_scan", "vuln_scan"],
+    "vuln_scan": ["vuln_scan", "port_scan"],
+    "rootkit": ["rkhunter_scan", "chkrootkit_scan"],
+    "malware": ["clamav_scan"],
+    "security": ["port_scan", "vuln_scan", "rkhunter_scan", "chkrootkit_scan", "clamav_scan"],
+    "all": ["port_scan", "vuln_scan", "rkhunter_scan", "chkrootkit_scan", "clamav_scan"],
+}
+
+# scan_type → 推荐的报告模板映射
+_SCAN_REPORT_MAP: dict[str, str] = {
+    "port_scan": "port-scan",
+    "vuln_scan": "vuln-advisory",
+    "rootkit": "server-health",
+    "malware": "server-health",
+    "security": "vuln-advisory",
+    "all": "vuln-advisory",
+}
+
+
+async def _execute_with_failover(
+    scan_type: str,
+    target: str,
+    session_id: str,
+    user_id: str = "default",
+    extra_args: dict | None = None,
+) -> str:
+    """根据 scan_type 获取 failover 链，依次执行工具，失败后自动切换。
+
+    返回执行结果的汇总文本。
+    """
+    chain = _FAILOVER_CHAINS.get(scan_type, _FAILOVER_CHAINS.get("security", []))
+    if not chain:
+        return f"❌ 未知的检测类型: {scan_type}"
+
+    extra_args = extra_args or {}
+    results: list[str] = []
+    last_error: str | None = None
+
+    for idx, tool_name in enumerate(chain):
+        # 构建参数：统一传入 target，合并 extra_args
+        args: dict = {"target": target} if tool_name in ("port_scan", "vuln_scan", "clamav_scan") else {}
+        if tool_name == "clamav_scan":
+            args["target"] = extra_args.get("target", target) if extra_args.get("target") else "/root"
+            args["recursive"] = extra_args.get("recursive", True)
+        if tool_name == "port_scan":
+            if extra_args.get("ports"):
+                args["ports"] = extra_args["ports"]
+            args["arguments"] = extra_args.get("arguments", "-sV -sC")
+        if tool_name == "vuln_scan":
+            if extra_args.get("severity"):
+                args["severity"] = extra_args["severity"]
+        if tool_name == "chkrootkit_scan":
+            args["quick"] = extra_args.get("quick", True)
+        if tool_name == "rkhunter_scan":
+            args["check_all"] = extra_args.get("check_all", True)
+
+        # 执行工具
+        try:
+            result = await _execute_tool(tool_name, args, session_id, user_id=user_id)
+        except Exception as e:
+            result = f"❌ {tool_name} 执行异常: {str(e)[:200]}"
+
+        is_failure = _is_tool_failure(result)
+        if is_failure:
+            last_error = f"{tool_name} 失败: {result[:100]}"
+            results.append(f"⚠️ [{idx + 1}/{len(chain)}] {tool_name} → 失败，尝试下一个...")
+            continue
+        else:
+            results.append(f"✅ [{idx + 1}/{len(chain)}] {tool_name} → 成功\n{result}")
+            # 成功后记录历史，不再继续尝试
+            _record_tool_history(
+                session_id=session_id,
+                tool_name=tool_name,
+                tool_args=args,
+                tool_result_summary=result[:200],
+                success=True,
+                user_message=f"smart_orchestrator:{scan_type}:{target}",
+                user_id=user_id,
+            )
+            return "\n\n".join(results)
+
+    # 全部失败
+    results.append(f"❌ 所有 {len(chain)} 个工具均执行失败\n最后错误: {last_error}")
+    return "\n\n".join(results)
+
+
 async def _execute_tool(tool_name: str, arguments: dict, session_id: str, user_id: str = "default") -> str:
     """执行浏览器工具调用，返回结果文本。所有操作自动允许，无需用户确认。"""
     from backend.tools import get_browser_agent
@@ -1510,6 +1629,54 @@ async def _execute_tool(tool_name: str, arguments: dict, session_id: str, user_i
             except Exception as e:
                 logger.warning(f"generate_report failed: {e}")
                 return f"❌ 报告生成失败: {str(e)[:200]}"
+
+        # ── 智能编排工具 ──
+        elif tool_name == "smart_orchestrator":
+            target = arguments.get("target", "")
+            scan_type = arguments.get("scan_type", "security")
+            if not target:
+                return "❌ smart_orchestrator: 缺少 target 参数"
+
+            report_template = arguments.get("report_template")
+            extra_args = {}
+            if arguments.get("ports"):
+                extra_args["ports"] = arguments["ports"]
+            if arguments.get("severity"):
+                extra_args["severity"] = arguments["severity"]
+
+            # 执行带 failover 链的扫描
+            scan_result = await _execute_with_failover(
+                scan_type=scan_type,
+                target=target,
+                session_id=session_id,
+                user_id=user_id,
+                extra_args=extra_args,
+            )
+
+            # 如果扫描成功，自动生成报告
+            if not _is_tool_failure(scan_result):
+                # 选择报告模板
+                template_id = report_template or _SCAN_REPORT_MAP.get(scan_type, "vuln-advisory")
+                try:
+                    from backend.api.report_routes import generate_report_artifact as _gen_report
+                    body = {
+                        "template": template_id,
+                        "data": {
+                            "target": target,
+                            "scan_type": scan_type,
+                            "_full_scan_output": scan_result,
+                        },
+                        "session_id": session_id,
+                        "artifact_title": f"智能编排报告_{target}_{template_id}",
+                    }
+                    report_result = await _gen_report(body, user_id=user_id)
+                    if report_result.get("ok") and report_result.get("data", {}).get("artifact_id"):
+                        aid = report_result["data"]["artifact_id"]
+                        scan_result += f"\n\n📋 **报告已自动生成并存入制品 (ID: {aid})**"
+                except Exception as e:
+                    logger.warning(f"smart_orchestrator report generation failed: {e}")
+
+            return scan_result
 
         else:
             # ── 自定义工具执行（HTTP 端点）──
@@ -1905,47 +2072,22 @@ def _recommend_tools(query: str, user_id: str = "default") -> str:
     # ── 维度2：语义关键词匹配 ──
     q = query.lower()
 
-    # Rootkit 检测
-    rootkit_keywords = ["rootkit", "后门", "内核模块", "隐藏进程", "木马", "恶意软件",
-                        "入侵检测", "主机安全", "系统完整性", "可疑进程", "异常进程"]
-    if any(kw in q for kw in rootkit_keywords):
+    # 安全检测相关（根检测、病毒扫描、端口扫描、漏洞扫描、安全通告）
+    security_keywords = ["扫描", "端口", "漏洞", "安全检测", "渗透", "nmap", "nuclei",
+        "开放端口", "服务检测", "cve", "入侵", "攻击面", "靶场", "靶机",
+        "rootkit", "后门", "内核模块", "隐藏进程", "木马", "恶意软件",
+        "入侵检测", "主机安全", "系统完整性", "可疑进程", "异常进程",
+        "病毒", "恶意文件", "文件扫描", "clamav", "恶意代码", "文件检测", "木马文件", "webshell",
+        "通告", "公告", "安全公告", "漏洞通告", "预警", "紧急", "应急", "补丁",
+        "零日", "0day", "远程代码执行", "rce", "文件包含", "sql注入"]
+    if any(kw in q for kw in security_keywords):
         recommendations.append(
-            "- 🧬 **Rootkit 检测** (`rkhunter_scan`): 检查系统后门和隐藏文件\n"
-            "- 🔄 **chkrootkit 扫描** (`chkrootkit_scan`): 互补检测 Rootkit 特征"
-        )
-
-    # 病毒/恶意文件检测
-    virus_keywords = ["病毒", "恶意文件", "文件扫描", "clamav", "恶意代码",
-                      "文件检测", "木马文件", "webshell"]
-    if any(kw in q for kw in virus_keywords):
-        recommendations.append(
-            "- 🦠 **病毒扫描** (`clamav_scan`): 使用 ClamAV 扫描病毒/恶意代码"
-        )
-
-    # 安全扫描
-    scan_keywords = ["扫描", "端口", "漏洞", "安全检测", "渗透", "nmap", "nuclei",
-                     "开放端口", "服务检测", "cve", "入侵", "攻击面", "靶场", "靶机"]
-    if any(kw in q for kw in scan_keywords):
-        recommendations.append(
-            "- 🔍 **端口扫描** (`port_scan`): 检测目标开放端口和服务版本\n"
-            "- 🛡️ **漏洞扫描** (`vuln_scan`): 使用 Nuclei 检测已知漏洞\n"
-            "- 📖 **漏洞知识库**: 自动检索相关 CVE 漏洞信息"
-        )
-
-    # 安全通告 — 触发自动编排链路
-    advisory_keywords = ["通告", "公告", "安全公告", "cve", "cve-", "漏洞通告",
-                         "预警", "紧急", "应急", "补丁", "月份安全公告", "漏洞预警",
-                         "安全动态", "威胁情报", "安全通报", "cisa", "nvd",
-                         "零日", "0day", "远程代码执行", "rce", "文件包含", "sql注入"]
-    if any(kw in q for kw in advisory_keywords):
-        recommendations.append(
-            "📢 **检测到安全通告/威胁情报消息**\n"
-            "  此消息包含安全通告内容，我会自动：\n"
-            "  1. 分析通告中的漏洞信息和受影响产品\n"
-            "  2. 根据通告内容选择最合适的检测工具\n"
-            "  3. 执行检测并收集结果\n"
-            "  4. 调用报告引擎生成固定模板的检测报告\n"
-            "  5. 输出完整的**安全通告检测报告**"
+            "🛡️ **检测到安全扫描/检测需求** — 建议使用 `smart_orchestrator` 工具：\n"
+            "  - 传入 `target`（检测目标）和 `scan_type`（检测类型）\n"
+            "  - 系统自动选择最优检测工具，执行扫描，失败自动切换备选工具\n"
+            "  - 扫描成功后自动生成结构化检测报告\n"
+            "  - scan_type 可选：port_scan / vuln_scan / rootkit / malware / security / all\n"
+            "  - 示例：`smart_orchestrator(target=\"192.168.1.1\", scan_type=\"security\")`"
         )
 
     # 报告生成

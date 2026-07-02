@@ -1,0 +1,34 @@
+# 智能编排工具 smart_orchestrator 改造方案
+
+## 核心改动
+
+### 1. 新增通用函数：`_execute_with_failover(tool_name, arguments, session_id, user_id, failover_chain)`
+- 读工具定义的 `fallback` 字段构建 failover 链
+- 按 priority 排序，优先执行高优先级
+- 失败后自动走链中下一个
+- 返回最终结果（成功或全部失败的汇总）
+
+### 2. 新增 `ALL_TOOLS` 中的 `smart_orchestrator` 工具定义
+- name: smart_orchestrator
+- 参数: target(string), scan_type(string), report_template(string, optional)
+- scan_type 取值: "port_scan", "vuln_scan", "rootkit", "malware", "all"
+- description: "智能安全扫描编排 — 自动推荐最适合的工具，执行扫描，失败自动切换，生成报告"
+
+### 3. 在 `_execute_tool` 中新增 `smart_orchestrator` 分支
+- 根据 scan_type 查工具池，筛选该类型的工具列表
+- 按 priority 排序
+- 调用 `_execute_with_failover` 依次执行
+- 执行后调用 `_recommend_tools` 做语义推荐（但已经由编排器执行了）
+- 可选：检测到 scan_type 涉及安全通告时自动调 generate_report
+
+### 4. 修改 `_recommend_tools` → 改为提示 LLM 调 smart_orchestrator
+- 原先推荐具体工具（port_scan/vuln_scan）改为推荐 smart_orchestrator
+- "检测到安全扫描需求，建议使用 smart_orchestrator 工具，传入 scan_type 和 target"
+
+## 改动文件
+只改一个文件：`/root/next-gen-agent/backend/api/chat_routes.py`
+
+## 不改
+- tools_routes.py（工具列表定义保持现状，smart_orchestrator 在 ALL_TOOLS 中）
+- 前端代码
+- 其他路由文件

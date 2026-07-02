@@ -288,7 +288,7 @@ export function ChatPage() {
                   const isStreaming = msg.id.startsWith('streaming-') || msg.id.startsWith('sse-');
                   const isThinkingMsg = msg.id.startsWith('thinking-');
                   if (isThinkingMsg) {
-                    return <ThinkingBubble key={msg.id} />;
+                    return <ThinkingBubble key={msg.id} content={msg.reasoning} />;
                   }
                   return (
                     <MessageBubble

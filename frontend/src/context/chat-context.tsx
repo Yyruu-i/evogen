@@ -40,9 +40,17 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     setState((prev) => {
       const msgs = prev.messages;
       const last = msgs[msgs.length - 1];
-      // 如果最后一条是 thinking 占位，替换掉它
+      // Pre-compute reasoning from thinking- msg before replacement
+      let accumulatedReasoning: string | undefined = undefined;
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        if (msgs[i].id.startsWith('thinking-') && msgs[i].reasoning) {
+          accumulatedReasoning = msgs[i].reasoning;
+          break;
+        }
+      }
+      // 如果最后一条是 thinking 占位，替换掉它（保留已累积的 reasoning）
       if (last?.role === 'assistant' && last.id.startsWith('thinking-')) {
-        return { ...prev, messages: [...msgs.slice(0, -1), { id: `${prefix}${Date.now()}`, role: 'assistant', content: chunk, timestamp: new Date().toISOString() }] };
+        return { ...prev, messages: [...msgs.slice(0, -1), { id: `${prefix}${Date.now()}`, role: 'assistant', content: chunk, timestamp: new Date().toISOString(), reasoning: accumulatedReasoning }] };
       }
       if (last?.role === 'assistant' && last.id.startsWith(prefix)) {
         return { ...prev, messages: [...msgs.slice(0, -1), { ...last, content: last.content + chunk }] };

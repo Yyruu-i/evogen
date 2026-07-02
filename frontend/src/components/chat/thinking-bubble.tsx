@@ -1,10 +1,16 @@
 import { Bot, Brain } from 'lucide-react';
 
+interface ThinkingBubbleProps {
+  content?: string;
+}
+
 /**
  * 思考中气泡 — 消息发出后立即显示，表示 AI 正在处理。
- * 第一个 SSE chunk 到达后会被正常 assistant 消息覆盖。
+ * 当有 reasoning 内容时，展示具体思考内容。
+ * 第一个 SSE content chunk 到达后会被正常 assistant 消息覆盖。
  */
-export function ThinkingBubble() {
+export function ThinkingBubble({ content }: ThinkingBubbleProps) {
+  const showContent = content && content.trim().length > 0;
   return (
     <div className="flex gap-3 group">
       {/* Avatar */}
@@ -28,17 +34,34 @@ export function ThinkingBubble() {
             boxShadow: 'var(--chat-bubble-shadow)',
           }}
         >
-          <div className="flex items-center gap-2 px-4 py-2.5 text-[13px] font-medium"
-            style={{ color: 'var(--color-text-secondary)' }}
-          >
-            <Brain className="w-4 h-4 flex-shrink-0" style={{ color: 'var(--color-accent)' }} />
-            <span className="flex-1 text-left">正在思考...</span>
-            <div className="flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full animate-loading-dot-1" style={{ background: 'var(--color-accent)' }} />
-              <span className="w-1.5 h-1.5 rounded-full animate-loading-dot-2" style={{ background: 'var(--color-coral)' }} />
-              <span className="w-1.5 h-1.5 rounded-full animate-loading-dot-3" style={{ background: 'var(--color-holo)' }} />
+          {showContent ? (
+            <div className="px-4 py-2.5 text-[13px] leading-relaxed whitespace-pre-wrap max-h-[300px] overflow-y-auto"
+              style={{ color: 'var(--color-text-secondary)' }}
+            >
+              <div className="flex items-center gap-2 mb-2 text-[13px] font-medium">
+                <Brain className="w-4 h-4 flex-shrink-0" style={{ color: 'var(--color-accent)' }} />
+                <span>深度思考中...</span>
+                <div className="flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full animate-loading-dot-1" style={{ background: 'var(--color-accent)' }} />
+                  <span className="w-1.5 h-1.5 rounded-full animate-loading-dot-2" style={{ background: 'var(--color-coral)' }} />
+                  <span className="w-1.5 h-1.5 rounded-full animate-loading-dot-3" style={{ background: 'var(--color-holo)' }} />
+                </div>
+              </div>
+              <p>{content}</p>
             </div>
-          </div>
+          ) : (
+            <div className="flex items-center gap-2 px-4 py-2.5 text-[13px] font-medium"
+              style={{ color: 'var(--color-text-secondary)' }}
+            >
+              <Brain className="w-4 h-4 flex-shrink-0" style={{ color: 'var(--color-accent)' }} />
+              <span className="flex-1 text-left">正在思考...</span>
+              <div className="flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full animate-loading-dot-1" style={{ background: 'var(--color-accent)' }} />
+                <span className="w-1.5 h-1.5 rounded-full animate-loading-dot-2" style={{ background: 'var(--color-coral)' }} />
+                <span className="w-1.5 h-1.5 rounded-full animate-loading-dot-3" style={{ background: 'var(--color-holo)' }} />
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

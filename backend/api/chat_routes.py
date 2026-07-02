@@ -1573,48 +1573,12 @@ async def _call_llm_stream(
         "temperature": 0.7,
         "max_tokens": 4096,
     }
-    # 有 tools → 非流式（保证 tool_calls 正确返回）
-    # 无 tools → 流式 + thinking（逐字出 reasoning）
+    # 全流式统一：有 tools 也走流式，流式拼装 tool_calls
     model_name = _get_current_model()
+    payload["stream"] = True
     if tools:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
-        # 非流式请求，等待完整响应
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(url, json=payload, headers=headers)
-            if resp.status_code != 200:
-                error_text = resp.text[:500]
-                logger.error(f"LLM API error: {resp.status_code} {error_text}")
-                yield {"type": "error", "content": f"❌ LLM 调用失败 (HTTP {resp.status_code})"}
-                return
-            data = resp.json()
-            choice = data.get("choices", [{}])[0]
-            msg = choice.get("message", {})
-            reasoning = msg.get("reasoning_content") or choice.get("reasoning_content") or ""
-            raw_tool_calls = msg.get("tool_calls")
-            if raw_tool_calls:
-                calls = []
-                for tc in raw_tool_calls:
-                    fn = tc.get("function", {})
-                    try:
-                        args = json.loads(fn.get("arguments", "{}"))
-                    except json.JSONDecodeError:
-                        args = {}
-                    calls.append({"id": tc.get("id", ""), "name": fn.get("name", ""), "arguments": args})
-                if reasoning:
-                    yield {"type": "reasoning", "content": reasoning}
-                yield {"type": "tool_calls", "calls": calls}
-            else:
-                content = msg.get("content", "")
-                if reasoning:
-                    yield {"type": "reasoning", "content": reasoning}
-                if content:
-                    yield {"type": "content", "content": content}
-            return
-    # ═══════════════════════════
-    # 无 tools → 流式（纯聊天，支持 reasoning 逐字推送）
-    # ═══════════════════════════
-    payload["stream"] = True
     if model_name == "deepseek-v4-pro":
         payload["reasoning_effort"] = "high"
         payload["extra_body"] = {"thinking": {"type": "enabled"}}
@@ -1694,11 +1658,9 @@ async def _call_llm_stream(
         if not accumulated_tool_calls and not has_reasoning and not accumulated_content:
             pass  # 没有数据，继续到下一轮
 
-        # 有 reasoning → 先 yield reasoning 再 yield content
-        if has_reasoning:
-            if accumulated_content:
-                yield {"type": "content", "content": accumulated_content}
-            # 如果只有 reasoning 没有 content，也结束
+        # 有 reasoning → yield content（如果有），不提前 return（可能还有 tool_calls）
+        if has_reasoning and accumulated_content:
+            yield {"type": "content", "content": accumulated_content}
             return
 
         # 有 tool_calls → yield tool_calls
@@ -2586,8 +2548,8 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
         return
 
     # ── 自主规划与多智能体协作（复杂任务检测） ──
-    # 只在首个用户消息（无历史对话）或明确的新任务时触发
-    should_decompose = not recent_history
+    # 每次用户消息都走任务检测，由 LLM 判断是否需要分解
+    should_decompose = True
     if should_decompose:
         yield f"data: {json.dumps({'status': 'decomposing', 'message': '正在分析任务复杂度…'})}\\n\\n"
         task_plan = await _detect_complex_task(message)

@@ -1727,28 +1727,21 @@ async def _execute_tool(tool_name: str, arguments: dict, session_id: str, user_i
                 extra_args=extra_args,
             )
 
-            # 如果扫描成功，自动生成报告
+            # 如果扫描成功，推荐模板让用户确认
             if not _is_tool_failure(scan_result):
-                # 选择报告模板
-                template_id = report_template or _SCAN_REPORT_MAP.get(scan_type, "vuln-advisory")
-                try:
-                    from backend.api.report_routes import generate_report_artifact as _gen_report
-                    body = {
-                        "template": template_id,
-                        "data": {
-                            "target": target,
-                            "scan_type": scan_type,
-                            "_full_scan_output": scan_result,
-                        },
-                        "session_id": session_id,
-                        "artifact_title": f"智能编排报告_{target}_{template_id}",
-                    }
-                    report_result = await _gen_report(body, user_id=user_id)
-                    if report_result.get("ok") and report_result.get("data", {}).get("artifact_id"):
-                        aid = report_result["data"]["artifact_id"]
-                        scan_result += f"\n\n📋 **报告已自动生成并存入制品 (ID: {aid})**"
-                except Exception as e:
-                    logger.warning(f"smart_orchestrator report generation failed: {e}")
+                template_map = {"port_scan": "port-scan", "vuln_scan": "vuln-advisory",
+                                "rootkit": "server-health", "malware": "server-health",
+                                "security": "port-scan", "all": "port-scan"}
+                recommended = template_map.get(scan_type, "port-scan")
+                scan_result += (
+                    f"\\n\\n📄 **是否需要将此结果生成一份结构化报告？**\\n"
+                    f"可用的模板：\\n"
+                    f"- port-scan — 端口扫描报告，包含目标主机的端口开放情况与服务指纹识别报告\\n"
+                    f"- vuln-advisory — 安全通告检测报告，包含漏洞详情、影响范围和修复建议\\n"
+                    f"- server-health — 服务器健康巡检报告\\n"
+                    f"推荐：`{recommended}` (匹配本次 {scan_type} 扫描类型)\\n"
+                    f"请确认，我立即为你生成。"
+                )
 
             return scan_result
 

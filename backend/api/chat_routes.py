@@ -2742,18 +2742,16 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
                 logger.info(f"Fetching URL with Jina: {url[:80]}")
                 page_content = await fetch_jina(url)
                 formatted = format_page_content(page_content, url)
-                _save_message(session_id, "system", formatted)
                 search_context += f"\n\n### 网页: {url}\n{page_content}"
             except Exception as e:
                 logger.warning(f"Jina fetch failed for {url}: {e}")
-                _save_message(session_id, "system", f"⚠️ 无法抓取网页: {url}")
+                search_context += f"\n\n⚠️ 无法抓取网页: {url}"
 
     if msg_should_search and not msg_urls:
         try:
             logger.info(f"Tavily search triggered for: {message[:80]}")
             results = await search_tavily(message)
             formatted = format_search_results(results, message)
-            _save_message(session_id, "system", formatted)
             search_context += "\n\n### 搜索结果\n" + formatted
         except Exception as e:
             logger.warning(f"Tavily search failed: {e}")
@@ -2762,7 +2760,6 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
         try:
             results = await search_tavily(message)
             formatted = format_search_results(results, message)
-            _save_message(session_id, "system", formatted)
             search_context += "\n\n### 搜索结果\n" + formatted
         except Exception as e:
             logger.warning(f"Tavily search failed: {e}")

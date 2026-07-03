@@ -1,11 +1,12 @@
 import { createContext, useContext, useState, useCallback, type ReactNode } from 'react';
-import type { ChatMsg } from '@/types';
+import type { ChatMsg, ToolCallInfo } from '@/types';
 import { generateId } from '@/lib/utils';
 
 interface ChatState {
   messages: ChatMsg[];
   streaming: boolean;
   activeSessionId: string;
+  toolCalls: ToolCallInfo[]; // 当前 streaming 消息的 tool calls（按 callId 聚合）
 }
 
 interface ChatContextType {
@@ -17,12 +18,16 @@ interface ChatContextType {
   finalizeLastAssistant: () => void;
   clearMessages: () => void;
   setReasoning: (content: string) => void;
+  /** 添加或更新一个 tool call（按 callId 聚合） */
+  updateToolCall: (info: Partial<ToolCallInfo> & { callId: string }) => void;
+  /** 清空当前 tool calls 列表 */
+  clearToolCalls: () => void;
 }
 
 const ChatContext = createContext<ChatContextType | null>(null);
 
 export function ChatProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<ChatState>({ messages: [], streaming: false, activeSessionId: '' });
+  const [state, setState] = useState<ChatState>({ messages: [], streaming: false, activeSessionId: '', toolCalls: [] });
 
   const setMessages = useCallback((msgs: ChatMsg[] | ((prev: ChatMsg[]) => ChatMsg[])) => {
     setState((prev) => ({ ...prev, messages: typeof msgs === 'function' ? msgs(prev.messages) : msgs }));
@@ -50,12 +55,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
       // 如果最后一条是 thinking 占位，替换掉它（保留已累积的 reasoning）
       if (last?.role === 'assistant' && last.id.startsWith('thinking-')) {
-        return { ...prev, messages: [...msgs.slice(0, -1), { id: `${prefix}${Date.now()}`, role: 'assistant', content: chunk, timestamp: new Date().toISOString(), reasoning: accumulatedReasoning }] };
+        return { ...prev, messages: [...msgs.slice(0, -1), { id: `${prefix}${Date.now()}`, role: 'assistant', content: chunk, timestamp: new Date().toISOString(), reasoning: accumulatedReasoning, toolCalls: prev.toolCalls.length > 0 ? [...prev.toolCalls] : undefined }] };
       }
       if (last?.role === 'assistant' && last.id.startsWith(prefix)) {
-        return { ...prev, messages: [...msgs.slice(0, -1), { ...last, content: last.content + chunk }] };
+        return { ...prev, messages: [...msgs.slice(0, -1), { ...last, content: last.content + chunk, toolCalls: prev.toolCalls.length > 0 ? [...prev.toolCalls] : undefined }] };
       }
-      return { ...prev, messages: [...msgs, { id: `${prefix}${Date.now()}`, role: 'assistant', content: chunk, timestamp: new Date().toISOString() }] };
+      return { ...prev, messages: [...msgs, { id: `${prefix}${Date.now()}`, role: 'assistant', content: chunk, timestamp: new Date().toISOString(), toolCalls: prev.toolCalls.length > 0 ? [...prev.toolCalls] : undefined }] };
     });
   }, []);
 
@@ -63,14 +68,14 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     setState((prev) => {
       const last = prev.messages[prev.messages.length - 1];
       if (last?.id.startsWith('sse-') || last?.id.startsWith('streaming-')) {
-        return { ...prev, messages: [...prev.messages.slice(0, -1), { ...last, id: generateId() }] };
+        return { ...prev, messages: [...prev.messages.slice(0, -1), { ...last, id: generateId(), toolCalls: prev.toolCalls.length > 0 ? [...prev.toolCalls] : undefined }] };
       }
       return prev;
     });
   }, []);
 
   const clearMessages = useCallback(() => {
-    setState({ messages: [], streaming: false, activeSessionId: '' });
+    setState({ messages: [], streaming: false, activeSessionId: '', toolCalls: [] });
   }, []);
 
   const setReasoning = useCallback((content: string) => {
@@ -84,8 +89,32 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  const updateToolCall = useCallback((info: Partial<ToolCallInfo> & { callId: string }) => {
+    setState((prev) => {
+      const existing = prev.toolCalls.find((tc) => tc.callId === info.callId);
+      if (existing) {
+        // 更新已有的
+        return {
+          ...prev,
+          toolCalls: prev.toolCalls.map((tc) =>
+            tc.callId === info.callId ? { ...tc, ...info } : tc
+          ),
+        };
+      }
+      // 新增
+      return {
+        ...prev,
+        toolCalls: [...prev.toolCalls, info as ToolCallInfo],
+      };
+    });
+  }, []);
+
+  const clearToolCalls = useCallback(() => {
+    setState((prev) => ({ ...prev, toolCalls: [] }));
+  }, []);
+
   return (
-    <ChatContext.Provider value={{ state, setMessages, setStreaming, setActiveSession, updateLastAssistant, finalizeLastAssistant, clearMessages, setReasoning }}>
+    <ChatContext.Provider value={{ state, setMessages, setStreaming, setActiveSession, updateLastAssistant, finalizeLastAssistant, clearMessages, setReasoning, updateToolCall, clearToolCalls }}>
       {children}
     </ChatContext.Provider>
   );

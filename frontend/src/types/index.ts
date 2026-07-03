@@ -326,4 +326,16 @@ export interface ChatMsg {
   content: string;
   timestamp: string;
   reasoning?: string; // R1 模型原生 reasoning_content
+  toolCalls?: ToolCallInfo[]; // 工具调用卡片数据
+}
+
+export interface ToolCallInfo {
+  callId: string;
+  toolName: string;
+  args: string;
+  result?: string;
+  costTime?: number;
+  errorMsg?: string;
+  success?: boolean;
+  timestamp?: number;
 }

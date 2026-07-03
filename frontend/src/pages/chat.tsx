@@ -25,7 +25,7 @@ export function ChatPage() {
   const streamingRef = useRef(false);
   const [streamingUi, setStreamingUi] = useState(false);
   const qc = useQueryClient();
-  const { state: chat, setMessages, setStreaming, setActiveSession, updateLastAssistant, finalizeLastAssistant, clearMessages, setReasoning } = useChatContext();
+  const { state: chat, setMessages, setStreaming, setActiveSession, updateLastAssistant, finalizeLastAssistant, clearMessages, setReasoning, updateToolCall, clearToolCalls } = useChatContext();
 
   const { data: msgData, isLoading: msgsLoading } = useSessionMessages(activeId);
 
@@ -94,6 +94,8 @@ export function ChatPage() {
 
     // Fire-and-forget async SSE — state updates via stable refs
     const effectiveSession = activeId || chat.activeSessionId;
+    // 清空上一次的 tool calls
+    clearToolCallsRef.current();
     sendMessageAndStream(text, effectiveSession).finally(() => {
       streamingRef.current = false;
       setTimeout(() => {
@@ -139,6 +141,10 @@ export function ChatPage() {
   setSearchParamsRef.current = setSearchParams;
   const setMessagesRef = useRef(setMessages);
   setMessagesRef.current = setMessages;
+  const updateToolCallRef = useRef(updateToolCall);
+  updateToolCallRef.current = updateToolCall;
+  const clearToolCallsRef = useRef(clearToolCalls);
+  clearToolCallsRef.current = clearToolCalls;
 
   const sendMessageAndStream = useCallback(async (text: string, activeId: string) => {
     const B = window.location.origin;
@@ -187,6 +193,33 @@ export function ChatPage() {
                 '\n> 🛡️ ' + parsed.message,
                 'sse-'
               );
+            }
+            // ── 处理 tool_start —— 创建 tool call 条目 ──
+            if (parsed.status === 'tool_start' && parsed.callId) {
+              updateToolCallRef.current({
+                callId: parsed.callId,
+                toolName: parsed.tool,
+                args: JSON.stringify(parsed.args || {}),
+                timestamp: parsed.timestamp,
+              });
+            }
+            // ── 处理 tool_result —— 补全 tool call 结果 ──
+            if (parsed.status === 'tool_result' && parsed.callId) {
+              updateToolCallRef.current({
+                callId: parsed.callId,
+                result: parsed.result || '',
+                costTime: parsed.costTime,
+                errorMsg: parsed.errorMsg || '',
+                success: !parsed.errorMsg,
+                timestamp: parsed.timestamp,
+              });
+            }
+            // ── 处理 tool_failure —— 标记失败 ──
+            if (parsed.status === 'tool_failure' && parsed.callId) {
+              updateToolCallRef.current({
+                callId: parsed.callId,
+                success: false,
+              });
             }
           } catch {
             // 非 JSON 数据忽略，不显示到正文
@@ -305,6 +338,7 @@ export function ChatPage() {
                       timestamp={msg.timestamp}
                       isStreaming={isStreaming}
                       reasoning={msg.reasoning}
+                      toolCalls={msg.toolCalls}
                     />
                   );
                 })

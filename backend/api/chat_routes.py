@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import time
 import subprocess
 import sys
 import tempfile
@@ -1983,13 +1984,17 @@ async def _tool_loop_stream_generator(
                     "Tool call #%d: %s args=%s", iteration, tool_name, tool_args
                 )
 
+                # 生成 callId（按 callId 聚合 tool_start / tool_result）
+                call_id = tool_call_id if tool_call_id.startswith("tc_") else f"tc_{uuid.uuid4().hex[:12]}"
+                start_ts = int(time.time() * 1000)
+
                 # 通知前端：开始执行工具
-                yield f"data: {json.dumps({'status': 'tool_start', 'tool': tool_name, 'args': tool_args})}\n\n"
+                yield f"data: {json.dumps({'status': 'tool_start', 'callId': call_id, 'tool': tool_name, 'args': tool_args, 'timestamp': start_ts})}\n\n"
 
                 # 检查工具是否已被禁用（连续失败2次）
                 if tool_fail_count.get(tool_name, 0) >= 2:
                     disabled_msg = f"⚠️ 工具 {tool_name} 连续执行失败，已自动禁用。请尝试其他工具。"
-                    yield f"data: {json.dumps({'status': 'tool_skipped', 'tool': tool_name, 'result': disabled_msg})}\n\n"
+                    yield f"data: {json.dumps({'status': 'tool_skipped', 'callId': call_id, 'tool': tool_name, 'result': disabled_msg, 'timestamp': int(time.time() * 1000)})}\n\n"
                     llm_messages.append({
                         "role": "assistant",
                         "content": "",
@@ -2015,7 +2020,7 @@ async def _tool_loop_stream_generator(
                 is_failure = _is_tool_failure(tool_result)
                 if is_failure:
                     tool_fail_count[tool_name] = tool_fail_count.get(tool_name, 0) + 1
-                    yield f"data: {json.dumps({'status': 'tool_failure', 'tool': tool_name, 'fail_count': tool_fail_count[tool_name]})}\n\n"
+                    yield f"data: {json.dumps({'status': 'tool_failure', 'callId': call_id, 'tool': tool_name, 'fail_count': tool_fail_count[tool_name]})}\n\n"
                     # 不自动切换工具——把失败结果喂回 LLM，让 LLM 自己决定下一步
                     logger.info(f"Tool {tool_name} failed (count={tool_fail_count[tool_name]}), feeding result back to LLM")
                 else:
@@ -2028,7 +2033,14 @@ async def _tool_loop_stream_generator(
                     f"🔧 调用工具: {tool_name}({args_summary})\\n结果: {tool_result[:200]}")
 
                 # 通知前端：工具执行完成
-                yield f"data: {json.dumps({'status': 'tool_result', 'tool': tool_name, 'result': tool_result[:300]})}\\\n\\n"
+                end_ts = int(time.time() * 1000)
+                cost_time = end_ts - start_ts
+                error_msg = ""
+                if is_failure:
+                    # 尝试提取错误信息
+                    err_match = tool_result[:300]
+                    error_msg = err_match
+                yield f"data: {json.dumps({'status': 'tool_result', 'callId': call_id, 'tool': tool_name, 'result': tool_result[:300], 'costTime': cost_time, 'errorMsg': error_msg, 'timestamp': end_ts})}\n\n"
 
                 # 收集扫描数据（用于报告）
                 if tool_name in ("port_scan", "vuln_scan"):

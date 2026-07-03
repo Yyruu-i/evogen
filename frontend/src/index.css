@@ -399,15 +399,15 @@
     text-transform: uppercase;
   }
 
-  table { border-collapse: collapse; width: 100%; margin: 8px 0; }
-  th {
+  .prose table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 14px !important; }
+  .prose th {
     font-weight: 700; font-size: 14px;
     color: var(--color-text-primary);
     text-align: left; padding: 8px 12px;
     border-bottom: 1px solid var(--color-border);
   }
-  td { font-size: 14px; padding: 8px 12px; border-bottom: 1px solid var(--color-border-glass); }
-  tr:last-child td { border-bottom: none; }
+  .prose td { font-size: 14px; padding: 8px 12px; border-bottom: 1px solid var(--color-border-glass); }
+  .prose tr:last-child td { border-bottom: none; }
 
   pre {
     background: var(--color-bg-tertiary);

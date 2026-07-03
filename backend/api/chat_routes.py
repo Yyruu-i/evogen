@@ -164,6 +164,35 @@ BROWSER_TOOLS: list[dict] = [
 # 全部工具（可后续扩展 terminal、web_search 等）
 # 每个工具包含 vendor（厂商/项目名）和 purpose（用途说明），供前端展示和 LLM 选型参考
 ALL_TOOLS: list[dict] = BROWSER_TOOLS + [
+    # ── 智能编排工具（首选！安全检测用这个，不要用下面的具体工具）──
+    {
+        "type": "function",
+        "function": {
+            "name": "smart_orchestrator",
+            "description": "[EvoGen] 智能安全扫描编排 — 自动推荐最适合的检测工具，按优先级执行扫描，失败自动切换备选工具，最后自动生成结构化安全检测报告。一条命令完成全流程。",
+            "vendor": "EvoGen",
+            "purpose": "智能编排 / 一键扫描+报告全流程（端口扫描/漏洞扫描/Rootkit/病毒检测，首选此工具）",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "检测目标，IP 地址、域名或文件路径"},
+                    "scan_type": {
+                        "type": "string",
+                        "description": "检测类型:\n- port_scan: 端口扫描（使用 nmap，失败自动切换 Nuclei）\n- vuln_scan: 漏洞扫描（使用 Nuclei，失败自动切换 nmap）\n- rootkit: Rootkit 检测（先 rkhunter，失败切换 chkrootkit）\n- malware: 恶意文件/病毒扫描（使用 ClamAV）\n- security: 全面安全检测（端口扫描 + 漏洞扫描 + Rootkit 检测，按优先级依次执行）\n- all: 全量检测（执行所有可用安全工具）",
+                        "enum": ["port_scan", "vuln_scan", "rootkit", "malware", "security", "all"],
+                    },
+                    "report_template": {
+                        "type": "string",
+                        "description": "可选：报告模板ID，不传则自动根据 scan_type 推荐模板。可选值：vuln-advisory、port-scan、server-health、code-review、network-topology",
+                        "enum": ["vuln-advisory", "port-scan", "server-health", "code-review", "network-topology"],
+                    },
+                    "ports": {"type": "string", "description": "可选：端口范围，仅 scan_type=port_scan 时生效，如 22,80,443 或 1-1000"},
+                    "severity": {"type": "string", "description": "可选：漏洞严重级别过滤，仅 scan_type=vuln_scan 时生效，如 critical,high,medium"},
+                },
+                "required": ["target", "scan_type"],
+            },
+        },
+    },
     # ── 端口扫描类 ──
     {
         "type": "function",
@@ -276,35 +305,6 @@ ALL_TOOLS: list[dict] = BROWSER_TOOLS + [
                     },
                 },
                 "required": ["template", "data"],
-            },
-        },
-    },
-    # ── 智能编排工具 ──
-    {
-        "type": "function",
-        "function": {
-            "name": "smart_orchestrator",
-            "description": "[EvoGen] 智能安全扫描编排 — 自动推荐最适合的检测工具，按优先级执行扫描，失败自动切换备选工具，最后自动生成结构化安全检测报告。一条命令完成全流程。",
-            "vendor": "EvoGen",
-            "purpose": "智能编排 / 一键扫描+报告全流程",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "target": {"type": "string", "description": "检测目标，IP 地址、域名或文件路径"},
-                    "scan_type": {
-                        "type": "string",
-                        "description": "检测类型:\n- port_scan: 端口扫描（使用 nmap，失败自动切换 Nuclei）\n- vuln_scan: 漏洞扫描（使用 Nuclei，失败自动切换 nmap）\n- rootkit: Rootkit 检测（先 rkhunter，失败切换 chkrootkit）\n- malware: 恶意文件/病毒扫描（使用 ClamAV）\n- security: 全面安全检测（端口扫描 + 漏洞扫描 + Rootkit 检测，按优先级依次执行）\n- all: 全量检测（执行所有可用安全工具）",
-                        "enum": ["port_scan", "vuln_scan", "rootkit", "malware", "security", "all"],
-                    },
-                    "report_template": {
-                        "type": "string",
-                        "description": "可选：报告模板ID，不传则自动根据 scan_type 推荐模板。可选值：vuln-advisory、port-scan、server-health、code-review、network-topology",
-                        "enum": ["vuln-advisory", "port-scan", "server-health", "code-review", "network-topology"],
-                    },
-                    "ports": {"type": "string", "description": "可选：端口范围，仅 scan_type=port_scan 时生效，如 22,80,443 或 1-1000"},
-                    "severity": {"type": "string", "description": "可选：漏洞严重级别过滤，仅 scan_type=vuln_scan 时生效，如 critical,high,medium"},
-                },
-                "required": ["target", "scan_type"],
             },
         },
     },
@@ -2868,6 +2868,14 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
         "- 无需手动调 generate_report\\n"
         "\\n"
         "调用示例：`smart_orchestrator(target=\"192.168.1.1\", scan_type=\"security\")`\\n"
+        "\\n"
+        "### 对话示例（必须严格遵守）：\\n"
+        "用户说：「对 127.0.0.1 做端口扫描」→ 你应该直接调 smart_orchestrator(target=\"127.0.0.1\", scan_type=\"port_scan\")，\\n"
+        "                             **不要回复\"好的\"或\"马上\"等任何文字**，直接执行工具调用。\\n"
+        "用户说：「扫描 10.0.0.5 的漏洞」→ smart_orchestrator(target=\"10.0.0.5\", scan_type=\"vuln_scan\")，\\n"
+        "                             **直接调工具，不要回复文字**。\\n"
+        "用户说：「查一下有没有 rootkit」→ smart_orchestrator(target=\"localhost\", scan_type=\"rootkit\")，\\n"
+        "                             **直接调工具，不要回复文字**。\\n"
         "\\n"
         "### 备选（仅当 smart_orchestrator 不适用时）\\n"
         "以下工具供特殊场景使用：\\n"

@@ -1,3 +1,5 @@
+import type { ToolCallInfo } from '@/types';
+import { ToolCallCard } from './tool-call-card';
 import { useState, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -11,6 +13,7 @@ interface MessageBubbleProps {
   timestamp?: string;
   isStreaming?: boolean;
   reasoning?: string; // R1 模型的原生 reasoning_content
+  toolCalls?: ToolCallInfo[]; // 工具调用卡片
 }
 
 /**
@@ -30,7 +33,7 @@ function parseThinkingContent(text: string): { thinking: string | null; answer: 
   return { thinking, answer };
 }
 
-export function MessageBubble({ role, content, timestamp, isStreaming, reasoning }: MessageBubbleProps) {
+export function MessageBubble({ role, content, timestamp, isStreaming, reasoning, toolCalls }: MessageBubbleProps) {
   const isUser = role === 'user';
   const isTool = role === 'tool';
   const isAssistant = !isUser && !isTool;
@@ -131,6 +134,15 @@ export function MessageBubble({ role, content, timestamp, isStreaming, reasoning
                     {thinkingContent}
                   </div>
                 )}
+              </div>
+            )}
+
+            {/* ── Tool call cards ── */}
+            {isAssistant && toolCalls && toolCalls.length > 0 && (
+              <div className="flex flex-col gap-2">
+                {toolCalls.map((tc) => (
+                  <ToolCallCard key={tc.callId} call={tc} />
+                ))}
               </div>
             )}
 

@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import time
 import subprocess
 import sys
 import tempfile
@@ -163,6 +164,35 @@ BROWSER_TOOLS: list[dict] = [
 # 全部工具（可后续扩展 terminal、web_search 等）
 # 每个工具包含 vendor（厂商/项目名）和 purpose（用途说明），供前端展示和 LLM 选型参考
 ALL_TOOLS: list[dict] = BROWSER_TOOLS + [
+    # ── 智能编排工具（首选！安全检测用这个，不要用下面的具体工具）──
+    {
+        "type": "function",
+        "function": {
+            "name": "smart_orchestrator",
+            "description": "[EvoGen] 智能安全扫描编排 — 自动推荐最适合的检测工具，按优先级执行扫描，失败自动切换备选工具，最后自动生成结构化安全检测报告。一条命令完成全流程。",
+            "vendor": "EvoGen",
+            "purpose": "智能编排 / 一键扫描+报告全流程（端口扫描/漏洞扫描/Rootkit/病毒检测，首选此工具）",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "检测目标，IP 地址、域名或文件路径"},
+                    "scan_type": {
+                        "type": "string",
+                        "description": "检测类型:\n- port_scan: 端口扫描（使用 nmap，失败自动切换 Nuclei）\n- vuln_scan: 漏洞扫描（使用 Nuclei，失败自动切换 nmap）\n- rootkit: Rootkit 检测（先 rkhunter，失败切换 chkrootkit）\n- malware: 恶意文件/病毒扫描（使用 ClamAV）\n- security: 全面安全检测（端口扫描 + 漏洞扫描 + Rootkit 检测，按优先级依次执行）\n- all: 全量检测（执行所有可用安全工具）",
+                        "enum": ["port_scan", "vuln_scan", "rootkit", "malware", "security", "all"],
+                    },
+                    "report_template": {
+                        "type": "string",
+                        "description": "可选：报告模板ID，不传则自动根据 scan_type 推荐模板。可选值：vuln-advisory、port-scan、server-health、code-review、network-topology",
+                        "enum": ["vuln-advisory", "port-scan", "server-health", "code-review", "network-topology"],
+                    },
+                    "ports": {"type": "string", "description": "可选：端口范围，仅 scan_type=port_scan 时生效，如 22,80,443 或 1-1000"},
+                    "severity": {"type": "string", "description": "可选：漏洞严重级别过滤，仅 scan_type=vuln_scan 时生效，如 critical,high,medium"},
+                },
+                "required": ["target", "scan_type"],
+            },
+        },
+    },
     # ── 端口扫描类 ──
     {
         "type": "function",
@@ -246,6 +276,35 @@ ALL_TOOLS: list[dict] = BROWSER_TOOLS + [
                     "target": {"type": "string", "description": "要扫描的目录或文件路径，默认 /root"},
                     "recursive": {"type": "boolean", "description": "是否递归扫描子目录，默认 true"},
                 },
+            },
+        },
+    },
+    # ── 报告生成类 ──
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_report",
+            "description": "[模板引擎] 报告生成 — 将扫描/检测结果用模板渲染成结构化报告并存入制品面板",
+            "vendor": "EvoGen",
+            "purpose": "报告生成 / 制品存储",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "template": {
+                        "type": "string",
+                        "description": "模板ID，可选值：vuln-advisory（安全通告检测报告）、port-scan（端口扫描报告）、server-health（服务器健康巡检报告）、code-review（代码审查报告）、network-topology（网络拓扑探测报告）",
+                        "enum": ["vuln-advisory", "port-scan", "server-health", "code-review", "network-topology"],
+                    },
+                    "data": {
+                        "type": "object",
+                        "description": "模板填充数据，根据模板字段传入对应的键值对",
+                    },
+                    "artifact_title": {
+                        "type": "string",
+                        "description": "制品标题（可选，默认自动生成）",
+                    },
+                },
+                "required": ["template", "data"],
             },
         },
     },
@@ -355,14 +414,16 @@ def _get_all_tools_for_user(user_id: str) -> list[dict]:
 
     return base
 
-def _get_skills_for_user(user_id: str) -> str:
+def _get_skills_for_user(user_id: str, user_message: str = "") -> str:
     """获取当前用户的技能描述文本，用于注入 system prompt。
 
-    从 skills_routes 读取用户的自定义技能，返回格式化的提示文本。
+    列出所有技能索引，并根据用户消息的 tags/description 关键词匹配，
+    将匹配技能的 SKILL.md 全文注入 system prompt。
     """
     try:
         from backend.api.skills_routes import _parse_skill_frontmatter, _SKILLS_DIRS
-        skill_texts: list[str] = []
+
+        all_skills: list[dict] = []
         for skills_dir in _SKILLS_DIRS:
             user_skill_dir = skills_dir / user_id
             if not user_skill_dir.is_dir():
@@ -376,14 +437,44 @@ def _get_skills_for_user(user_id: str) -> str:
                         continue
                     meta = _parse_skill_frontmatter(skill_file)
                     if meta:
-                        name = meta.get("name") or skill_dir.name
-                        desc = meta.get("description", "")
-                        skill_texts.append(f"- {name}: {desc}")
-        if skill_texts:
-            return "\n\n## 可用技能\n你可以使用以下技能:\n" + "\n".join(skill_texts)
+                        all_skills.append({
+                            "name": meta.get("name") or skill_dir.name,
+                            "description": meta.get("description", ""),
+                            "tags": meta.get("tags", []),
+                            "full_text": skill_file.read_text(encoding="utf-8"),
+                        })
     except Exception as e:
         logger.warning(f"Failed to load skills for user={user_id}: {e}")
-    return ""
+        return ""
+    if not all_skills:
+        return ""
+    lines: list[str] = []
+    lines.append("## 可用技能")
+    lines.append("你可以使用以下技能。当用户的问题与某技能相关时，在回答中利用该技能的知识：")
+    for s in all_skills:
+        lines.append(f"- **{s['name']}**: {s['description']}")
+    # 匹配用户消息
+    if user_message:
+        msg_lower = user_message.lower()
+        matched: list[dict] = []
+        for s in all_skills:
+            tags = [t.lower() for t in s.get("tags", [])]
+            tag_hit = any(tag in msg_lower for tag in tags)
+            if not tag_hit:
+                tag_hit = any(w in tag for w in re.split(r'[\s,，。！？、；：]+', msg_lower) if len(w) > 1 for tag in tags)
+            desc = s["description"].lower()
+            desc_hit = any(len(w) > 2 and w in desc for w in re.split(r'[\s,，。！？、；：]+', msg_lower))
+            if tag_hit or desc_hit:
+                matched.append(s)
+        if matched:
+            lines.append("")
+            lines.append("### 以下技能与当前问题相关，请优先参考其内容：")
+            for s in matched:
+                lines.append("")
+                lines.append(f"---")
+                lines.append(f"**{s['name']}**")
+                lines.append(s["full_text"])
+    return "\n".join(lines)
 
 
 # ── 工具调用限制 ──
@@ -396,12 +487,21 @@ MAX_TOOL_ITERATIONS = 8  # 最多工具调用轮数，防止死循环（单个�
 SUBTASK_DETECTION_PROMPT = """你是一个任务规划专家。请分析用户请求，判断它是否是一个复杂任务。
 
 复杂任务的判断标准：任务需要 2 个或更多不同领域的子任务才能完成，且这些子任务可以并行或按依赖顺序执行。
+
+重要规则：凡是涉及以下安全检测类关键词的请求，均视为简单任务（is_complex=false）：
+- 安全检测、漏洞扫描、端口扫描、CVE、Rootkit、病毒、恶意软件、入侵检测
+- Log4j、RCE、远程代码执行、SQL注入、文件包含、攻击面
+因为这些请求系统已有专门的 smart_orchestrator 工具一站式完成（自动扫描→检测→报告），不需要自行拆分子任务。
+
 例如：
 - "帮我开发一个登录功能" → 需要"设计数据库"、"编写后端API"、"开发前端页面"、"编写测试" → 复杂任务
 - "帮我查一下今天的天气" → 简单任务
 - "帮我写一个 Python 脚本解析 CSV 文件并生成报告" → 复杂任务（解析+生成报告可拆分）
-- "帮我扫描127.0.0.1的端口然后做漏洞检测" → 复杂任务，port_scan 依赖完成后才能 vuln_scan
-- "CVE-2026-48558 SimpleHelp认证绕过漏洞，请检测本机" → 复杂任务，需要先端口扫描确认服务再漏洞检测
+- "帮我扫描127.0.0.1的端口然后做漏洞检测" → 简单任务（系统自动用 smart_orchestrator 一站式完成）
+- "CVE-2026-48558 SimpleHelp认证绕过漏洞，请检测本机" → 简单任务（系统自动调 smart_orchestrator）
+- "扫描 192.168.1.1 的漏洞" → 简单任务
+- "查一下本机有没有被植入 rootkit" → 简单任务
+- "对服务器做全面安全检测" → 简单任务
 
 如果是复杂任务，请输出 JSON 格式：
 {"is_complex": true, "task_title": "任务标题", "subtasks": [{"id": 1, "name": "子任务名", "description": "子任务描述", "tools": ["port_scan", "vuln_scan"], "depends_on": []}, ...]}
@@ -697,68 +797,6 @@ async def _run_subtasks_concurrent(subtasks: list[dict], original_message: str, 
         if r:
             parts.append(r)
 
-    # ── 安全扫描报告自动生成（子任务中包含扫描工具调用时） ──
-    subtask_names = " ".join(s.get("name", "") + " " + s.get("description", "") for s in subtasks)
-    scan_keywords = ["port_scan", "vuln_scan", "nmap", "nuclei", "rkhunter", "chkrootkit", "clamav",
-                     "端口扫描", "漏洞扫描", "rootkit", "病毒", "检测"]
-    if any(kw in subtask_names.lower() for kw in scan_keywords):
-        import logging
-        report_logger = logging.getLogger(__name__)
-        report_logger.info(f"Subtask scan detected! keywords matched in: {subtask_names[:100]}")
-        try:
-            # 从子任务结果中提取关键数据，拼装成报告引擎需要的格式
-            all_results = "\n\n".join(results_text.values())
-            from datetime import datetime, timezone
-            report_data = {
-                "advisory_id": "CVE-2026-48558",
-                "advisory_title": "SimpleHelp 认证绕过漏洞 RCE",
-                "severity": "严重",
-                "target": "本机 (127.0.0.1)",
-                "scan_time": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
-                "tool_used": "Nmap (port_scan) + Nuclei (vuln_scan)",
-                "tool_results": all_results,
-                "vulnerabilities": ["CVE-2026-48558 - SimpleHelp 认证绕过RCE（影响版本 < 5.5.8）"] if "未发现" not in all_results else [],
-                "actions": [
-                    "升级 SimpleHelp 至 5.5.8 或以上版本",
-                    "如不使用 SimpleHelp，确认服务未在非标准端口运行",
-                    "定期进行安全扫描和漏洞排查",
-                ],
-                "open_ports": "",
-                "rootkit_findings": "（未检测）",
-            }
-            # 调用报告引擎
-            import httpx
-            async with httpx.AsyncClient(timeout=30.0, base_url="http://localhost:8100") as client:
-                resp = await client.post(
-                    "/api/v1/report/v2/render",
-                    json={"template": "vuln-advisory", "data": report_data},
-                )
-                if resp.status_code == 200:
-                    report = resp.json().get("data", {})
-                    report_md = report.get("raw_markdown", "")
-                    if report_md:
-                        quality = report.get("complete", True)
-                        passed = report.get("missing_fields")
-                        logger.info(f"Subtask report engine: complete={quality}, missing={passed}")
-                        if not quality and passed:
-                            report_md += f"\n\n> ⚠️ **数据质量校验提醒**\n> 缺失字段: {', '.join(passed)}"
-                        # 作为制品存入数据库（让前端制品面板可见）
-                        try:
-                            from backend.api.artifacts_routes import store_artifact
-                            store_artifact(
-                                "doc",
-                                f"安全报告_{report_data['target']}",
-                                report_md,
-                                session_id=session_id,
-                                user_id=user_id,
-                            )
-                            logger.info("Security report stored as artifact for panel display")
-                        except Exception as artifact_e:
-                            logger.warning(f"Failed to store report artifact: {artifact_e}")
-
-        except Exception as e:
-            logger.warning(f"Subtask security report generation failed: {e}")
-
     return "\n\n---\n\n".join(parts), results_text
 
 
@@ -956,6 +994,28 @@ async def _build_system_prompt(session_id: str, user_message: str, user_id: str)
         "除非用户明确提及，否则不要虚构任何部署环境信息（服务器提供商、域名、IP地址、云服务商等）。"
         "如果你不确定某个信息，请直接说不知道，不要编造。\\n"
     )
+
+    # ── 模板库提示（让 Agent 知道可以生成模板报告）──
+    # 放在基础 prompt 后、记忆之前，确保 Agent 能读到
+    try:
+        from backend.api.report_routes import TEMPLATES as _TEMPLATES
+        _templates_info = []
+        for _tid, _t in _TEMPLATES.items():
+            _templates_info.append(f"  - {_tid}: {_t.get('name', _tid)} — {_t.get('description', '')}")
+        if _templates_info:
+            parts.append(
+                "\n\n## 报告模板库\n"
+                "当用户执行了扫描/检测/分析类工具并得到结果后，你**必须主动询问**用户是否需要将结果生成一份结构化报告。\n"
+                "可用模板列表：\n"
+                + "\n".join(_templates_info) + "\n\n"
+                "如果用户同意并选择了模板，你直接调用 `generate_report` 工具（不是手动调 HTTP API）：\n"
+                "- template 参数填用户选的模板ID\n"
+                "- data 参数填你本次扫描/检测得到的结果数据\n"
+                "- artifact_title 参数可选\n"
+                "注意：你必须在用户明确选择了模板之后才可以调用。调用成功后报告会出现在对话的制品面板中。"
+            )
+    except Exception as _e:
+        logger.warning(f"Failed to inject template library info: {_e}")
 
     # ── 人格注入 (Fix 1) ──
     try:
@@ -1229,6 +1289,160 @@ def _run_mcp_tool(script_path: str, method: str, arguments: dict) -> str:
         return f"⚠️ MCP 工具异常: {str(e)[:200]}"
 
 
+# ── 智能编排：带 failover 链的工具执行 ──
+
+# ════════════════════════════════════════════════════════
+# 智能编排流程图（smart_orchestrator）
+#
+# 用户输入 "扫一下 192.168.1.1"
+#        │
+#        ▼
+#  ┌───────────────────────────────────┐
+#  │ LLM 调用 smart_orchestrator       │
+#  │ target="192.168.1.1",             │
+#  │ scan_type="security"              │
+#  └──────────────┬────────────────────┘
+#                 │
+#                 ▼
+#  ┌───────────────────────────────────┐
+#  │ _execute_with_failover()          │
+#  │ 查 _FAILOVER_CHAINS[scan_type]    │
+#  │ 得到执行链:                       │
+#  │ [port_scan→vuln_scan→rkhunter→   │
+#  │  chkrootkit→clamav]              │
+#  └──────────────┬────────────────────┘
+#                 │
+#        ┌────────┴────────┐
+#        ▼                  ▼
+#  链中取下一个工具      全部执行完毕
+#        │                 │
+#        ▼                 │
+#  ┌─────────────┐         │
+#  │ 执行工具    │         │
+#  │ (_execute)  │         │
+#  └──────┬──────┘         │
+#         │                │
+#    ┌────┴────┐           │
+#    ▼         ▼           │
+#  ✅成功    ❌失败         │
+#    │         │           │
+#    │    ┌────┘           │
+#    │    ▼                │
+#    │  自动切换           │
+#    │  下一工具 ──────────┘
+#    │
+#    ▼
+#  ┌───────────────────────────────────┐
+#  │ 选中报告模板 (scan_type→模板映射) │
+#  │ 调用 generate_report 生成结构化   │
+#  │ 报告并存入制品面板                │
+#  └──────────────┬────────────────────┘
+#                 │
+#                 ▼
+#  ┌───────────────────────────────────┐
+#  │ 返回扫描+报告结果给 LLM           │
+#  │ → LLM 展示给用户                  │
+#  └───────────────────────────────────┘
+# ════════════════════════════════════════════════════════
+
+# 安全工具的 failover 链配置（按 priority 排序，失败后自动走下一个）
+_FAILOVER_CHAINS: dict[str, list[str]] = {
+    "port_scan": ["port_scan", "vuln_scan"],
+    "vuln_scan": ["vuln_scan", "port_scan"],
+    "rootkit": ["rkhunter_scan", "chkrootkit_scan"],
+    "malware": ["clamav_scan"],
+    "security": ["port_scan", "vuln_scan", "rkhunter_scan", "chkrootkit_scan", "clamav_scan"],
+    "all": ["port_scan", "vuln_scan", "rkhunter_scan", "chkrootkit_scan", "clamav_scan"],
+}
+
+# scan_type → 推荐的报告模板映射
+_SCAN_REPORT_MAP: dict[str, str] = {
+    "port_scan": "port-scan",
+    "vuln_scan": "vuln-advisory",
+    "rootkit": "server-health",
+    "malware": "server-health",
+    "security": "vuln-advisory",
+    "all": "vuln-advisory",
+}
+
+
+async def _execute_with_failover(
+    scan_type: str,
+    target: str,
+    session_id: str,
+    user_id: str = "default",
+    extra_args: dict | None = None,
+) -> str:
+    """根据 scan_type 获取 failover 链，依次执行工具，失败后自动切换。
+
+    返回执行结果的汇总文本，每步用 [编排] 前缀标记，供上层 SSE 解析。
+    """
+    chain = _FAILOVER_CHAINS.get(scan_type, _FAILOVER_CHAINS.get("security", []))
+    if not chain:
+        return f"❌ 未知的检测类型: {scan_type}"
+
+    extra_args = extra_args or {}
+    results: list[str] = []
+    last_error: str | None = None
+    total = len(chain)
+
+    results.append(f"[编排] 📋 编排开始：scan_type={scan_type}，共 {total} 个工具")
+
+    for idx, tool_name in enumerate(chain):
+        # 构建参数：统一传入 target，合并 extra_args
+        args: dict = {"target": target} if tool_name in ("port_scan", "vuln_scan", "clamav_scan") else {}
+        if tool_name == "clamav_scan":
+            args["target"] = extra_args.get("target", target) if extra_args.get("target") else "/root"
+            args["recursive"] = extra_args.get("recursive", True)
+        if tool_name == "port_scan":
+            if extra_args.get("ports"):
+                args["ports"] = extra_args["ports"]
+            args["arguments"] = extra_args.get("arguments", "-sV -sC")
+        if tool_name == "vuln_scan":
+            if extra_args.get("severity"):
+                args["severity"] = extra_args["severity"]
+        if tool_name == "chkrootkit_scan":
+            args["quick"] = extra_args.get("quick", True)
+        if tool_name == "rkhunter_scan":
+            args["check_all"] = extra_args.get("check_all", True)
+
+        # 通知：开始执行
+        step_label = f"[{idx + 1}/{total}]"
+        results.append(f"[编排] 🔧 {step_label} {tool_name} 执行中...")
+
+        # 执行工具
+        try:
+            result = await _execute_tool(tool_name, args, session_id, user_id=user_id)
+        except Exception as e:
+            result = f"❌ {tool_name} 执行异常: {str(e)[:200]}"
+
+        is_failure = _is_tool_failure(result)
+        if is_failure:
+            last_error = f"{tool_name} 失败: {result[:100]}"
+            results.append(f"[编排] ❌ {step_label} {tool_name} 失败，自动切换到下一个工具")
+            continue
+        else:
+            results.append(f"[编排] ✅ {step_label} {tool_name} 成功")
+            # 成功：记录历史，不再继续尝试
+            _record_tool_history(
+                session_id=session_id,
+                tool_name=tool_name,
+                tool_args=args,
+                tool_result_summary=result[:200],
+                success=True,
+                user_message=f"smart_orchestrator:{scan_type}:{target}",
+                user_id=user_id,
+            )
+            # 追加工具结果详情
+            results.append(f"[编排] 📊 {step_label} 结果:\n{result}")
+            return "\n\n".join(results)
+
+    # 全部失败
+    results.append(f"[编排] ❌ 所有 {total} 个工具均执行失败")
+    results.append(f"[编排]   最后错误: {last_error}")
+    return "\n\n".join(results)
+
+
 async def _execute_tool(tool_name: str, arguments: dict, session_id: str, user_id: str = "default") -> str:
     """执行浏览器工具调用，返回结果文本。所有操作自动允许，无需用户确认。"""
     from backend.tools import get_browser_agent
@@ -1450,6 +1664,87 @@ async def _execute_tool(tool_name: str, arguments: dict, session_id: str, user_i
             except Exception as e:
                 return f"❌ ClamAV 扫描失败: {str(e)[:200]}"
 
+        # ── 报告生成 ──
+        elif tool_name == "generate_report":
+            template = arguments.get("template", "port-scan")
+            data = arguments.get("data", {})
+            artifact_title = arguments.get("artifact_title", f"报告_{template}")
+            try:
+                # 从 tool_history 中获取最近一次扫描的完整输出
+                try:
+                    from backend.db.connection import get_db
+                    db = get_db()
+                    row = db.execute(
+                        "SELECT tool_result_summary FROM tool_history "
+                        "WHERE session_id=? AND (tool_name=? OR tool_name LIKE '%scan%' OR tool_name LIKE '%detect%') "
+                        "ORDER BY id DESC LIMIT 1",
+                        (session_id, template.replace("-scan", "_scan")),
+                    ).fetchone()
+                    if row and row["tool_result_summary"]:
+                        data["_full_scan_output"] = row["tool_result_summary"]
+                except Exception:
+                    pass  # 补充数据失败不影响主流程
+
+                # 直接调report路由函数（绕过auth，用当前user_id）
+                from backend.api.report_routes import generate_report_artifact as _gen_report
+                body = {
+                    "template": template,
+                    "data": data,
+                    "session_id": session_id,
+                    "artifact_title": artifact_title,
+                }
+                result = await _gen_report(body, user_id=user_id)
+                if result.get("ok") and result.get("data", {}).get("artifact_id"):
+                    aid = result["data"]["artifact_id"]
+                    logger.info(f"Report artifact generated: {aid} via tool_call (user={user_id})")
+                    return f"✅ 报告已生成并存入制品 (ID: {aid})。用户可在对话右侧的制品面板「文档」标签中查看和导出。"
+                else:
+                    return f"⚠️ 报告生成失败: {result.get('error', '未知错误')}"
+            except Exception as e:
+                logger.warning(f"generate_report failed: {e}")
+                return f"❌ 报告生成失败: {str(e)[:200]}"
+
+        # ── 智能编排工具 ──
+        elif tool_name == "smart_orchestrator":
+            target = arguments.get("target", "")
+            scan_type = arguments.get("scan_type", "security")
+            if not target:
+                return "❌ smart_orchestrator: 缺少 target 参数"
+
+            report_template = arguments.get("report_template")
+            extra_args = {}
+            if arguments.get("ports"):
+                extra_args["ports"] = arguments["ports"]
+            if arguments.get("severity"):
+                extra_args["severity"] = arguments["severity"]
+
+            # 执行带 failover 链的扫描
+            scan_result = await _execute_with_failover(
+                scan_type=scan_type,
+                target=target,
+                session_id=session_id,
+                user_id=user_id,
+                extra_args=extra_args,
+            )
+
+            # 如果扫描成功，推荐模板让用户确认
+            if not _is_tool_failure(scan_result):
+                template_map = {"port_scan": "port-scan", "vuln_scan": "vuln-advisory",
+                                "rootkit": "server-health", "malware": "server-health",
+                                "security": "port-scan", "all": "port-scan"}
+                recommended = template_map.get(scan_type, "port-scan")
+                scan_result += (
+                    f"\\n\\n📄 **是否需要将此结果生成一份结构化报告？**\\n"
+                    f"可用的模板：\\n"
+                    f"- port-scan — 端口扫描报告，包含目标主机的端口开放情况与服务指纹识别报告\\n"
+                    f"- vuln-advisory — 安全通告检测报告，包含漏洞详情、影响范围和修复建议\\n"
+                    f"- server-health — 服务器健康巡检报告\\n"
+                    f"推荐：`{recommended}` (匹配本次 {scan_type} 扫描类型)\\n"
+                    f"请确认，我立即为你生成。"
+                )
+
+            return scan_result
+
         else:
             # ── 自定义工具执行（HTTP 端点）──
             # 查找用户自定义工具
@@ -1512,48 +1807,12 @@ async def _call_llm_stream(
         "temperature": 0.7,
         "max_tokens": 4096,
     }
-    # 有 tools → 非流式（保证 tool_calls 正确返回）
-    # 无 tools → 流式 + thinking（逐字出 reasoning）
+    # 全流式统一：有 tools 也走流式，流式拼装 tool_calls
     model_name = _get_current_model()
+    payload["stream"] = True
     if tools:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
-        # 非流式请求，等待完整响应
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(url, json=payload, headers=headers)
-            if resp.status_code != 200:
-                error_text = resp.text[:500]
-                logger.error(f"LLM API error: {resp.status_code} {error_text}")
-                yield {"type": "error", "content": f"❌ LLM 调用失败 (HTTP {resp.status_code})"}
-                return
-            data = resp.json()
-            choice = data.get("choices", [{}])[0]
-            msg = choice.get("message", {})
-            reasoning = msg.get("reasoning_content") or choice.get("reasoning_content") or ""
-            raw_tool_calls = msg.get("tool_calls")
-            if raw_tool_calls:
-                calls = []
-                for tc in raw_tool_calls:
-                    fn = tc.get("function", {})
-                    try:
-                        args = json.loads(fn.get("arguments", "{}"))
-                    except json.JSONDecodeError:
-                        args = {}
-                    calls.append({"id": tc.get("id", ""), "name": fn.get("name", ""), "arguments": args})
-                if reasoning:
-                    yield {"type": "reasoning", "content": reasoning}
-                yield {"type": "tool_calls", "calls": calls}
-            else:
-                content = msg.get("content", "")
-                if reasoning:
-                    yield {"type": "reasoning", "content": reasoning}
-                if content:
-                    yield {"type": "content", "content": content}
-            return
-    # ═══════════════════════════
-    # 无 tools → 流式（纯聊天，支持 reasoning 逐字推送）
-    # ═══════════════════════════
-    payload["stream"] = True
     if model_name == "deepseek-v4-pro":
         payload["reasoning_effort"] = "high"
         payload["extra_body"] = {"thinking": {"type": "enabled"}}
@@ -1633,11 +1892,9 @@ async def _call_llm_stream(
         if not accumulated_tool_calls and not has_reasoning and not accumulated_content:
             pass  # 没有数据，继续到下一轮
 
-        # 有 reasoning → 先 yield reasoning 再 yield content
-        if has_reasoning:
-            if accumulated_content:
-                yield {"type": "content", "content": accumulated_content}
-            # 如果只有 reasoning 没有 content，也结束
+        # 有 reasoning → yield content（如果有），不提前 return（可能还有 tool_calls）
+        if has_reasoning and accumulated_content:
+            yield {"type": "content", "content": accumulated_content}
             return
 
         # 有 tool_calls → yield tool_calls
@@ -1729,13 +1986,17 @@ async def _tool_loop_stream_generator(
                     "Tool call #%d: %s args=%s", iteration, tool_name, tool_args
                 )
 
+                # 生成 callId（按 callId 聚合 tool_start / tool_result）
+                call_id = tool_call_id if tool_call_id.startswith("tc_") else f"tc_{uuid.uuid4().hex[:12]}"
+                start_ts = int(time.time() * 1000)
+
                 # 通知前端：开始执行工具
-                yield f"data: {json.dumps({'status': 'tool_start', 'tool': tool_name, 'args': tool_args})}\n\n"
+                yield f"data: {json.dumps({'status': 'tool_start', 'callId': call_id, 'tool': tool_name, 'args': tool_args, 'timestamp': start_ts})}\n\n"
 
                 # 检查工具是否已被禁用（连续失败2次）
                 if tool_fail_count.get(tool_name, 0) >= 2:
                     disabled_msg = f"⚠️ 工具 {tool_name} 连续执行失败，已自动禁用。请尝试其他工具。"
-                    yield f"data: {json.dumps({'status': 'tool_skipped', 'tool': tool_name, 'result': disabled_msg})}\n\n"
+                    yield f"data: {json.dumps({'status': 'tool_skipped', 'callId': call_id, 'tool': tool_name, 'result': disabled_msg, 'timestamp': int(time.time() * 1000)})}\n\n"
                     llm_messages.append({
                         "role": "assistant",
                         "content": "",
@@ -1750,11 +2011,18 @@ async def _tool_loop_stream_generator(
                 # 执行工具
                 tool_result = await _execute_tool(tool_name, tool_args, session_id, user_id=user_id)
 
+                # ── 智能编排：展开 failover 链的每一步 ──
+                if tool_name == "smart_orchestrator":
+                    # 从 tool_result 中拆出编排过程的逐步描述
+                    step_lines = [l for l in tool_result.split("\n") if l.startswith("[编排]")]
+                    for step_line in step_lines:
+                        yield f"data: {json.dumps({'status': 'orchestrator_step', 'message': step_line[4:]})}\n\n"
+
                 # 失败检测 + 自动切换逻辑
                 is_failure = _is_tool_failure(tool_result)
                 if is_failure:
                     tool_fail_count[tool_name] = tool_fail_count.get(tool_name, 0) + 1
-                    yield f"data: {json.dumps({'status': 'tool_failure', 'tool': tool_name, 'fail_count': tool_fail_count[tool_name]})}\n\n"
+                    yield f"data: {json.dumps({'status': 'tool_failure', 'callId': call_id, 'tool': tool_name, 'fail_count': tool_fail_count[tool_name]})}\n\n"
                     # 不自动切换工具——把失败结果喂回 LLM，让 LLM 自己决定下一步
                     logger.info(f"Tool {tool_name} failed (count={tool_fail_count[tool_name]}), feeding result back to LLM")
                 else:
@@ -1767,7 +2035,14 @@ async def _tool_loop_stream_generator(
                     f"🔧 调用工具: {tool_name}({args_summary})\\n结果: {tool_result[:200]}")
 
                 # 通知前端：工具执行完成
-                yield f"data: {json.dumps({'status': 'tool_result', 'tool': tool_name, 'result': tool_result[:300]})}\\\n\\n"
+                end_ts = int(time.time() * 1000)
+                cost_time = end_ts - start_ts
+                error_msg = ""
+                if is_failure:
+                    # 尝试提取错误信息
+                    err_match = tool_result[:300]
+                    error_msg = err_match
+                yield f"data: {json.dumps({'status': 'tool_result', 'callId': call_id, 'tool': tool_name, 'result': tool_result[:300], 'costTime': cost_time, 'errorMsg': error_msg, 'timestamp': end_ts})}\n\n"
 
                 # 收集扫描数据（用于报告）
                 if tool_name in ("port_scan", "vuln_scan"):
@@ -1841,72 +2116,9 @@ async def _tool_loop_stream_generator(
         except Exception as e:
             logger.warning(f"Artifact extraction failed: {e}")
 
-    # ── 安全扫描报告自动生成（替换 full_text_response 为模板引擎内容）──
-    if session_scan_data:
-        try:
-            report = _generate_security_report(session_scan_data, session_id, user_id=user_id)
-            if report:
-                quality = _validate_report_quality(report)
-                logger.info(f"Security report generated. Quality check: {'PASS' if quality['pass'] else 'FAIL'} "
-                           f"({quality['passed_checks']}/{quality['total_checks']})")
-                if not quality["pass"]:
-                    logger.warning(f"Report quality issues: {quality['issues']}")
-                    issues_text = "\n".join(f"- {i}" for i in quality['issues'])
-                    quality_note = f"\n\n---\n\n> **⚠️ 数据质量校验提醒**\n> {issues_text}\n> *检查通过率: {quality['passed_checks']}/{quality['total_checks']}*"
-                    report += quality_note
-
-                # 替换完整输出（只显示模板报告）
-                report_section = f"## 📋 安全扫描报告\n\n{report}"
-                full_text_response = report_section
-                yield "data: " + json.dumps({"chunk": report_section}) + "\n\n"
-
-            # ── 再调报告引擎生成固定模板报告 ──
-            port_data = session_scan_data.get("port_scan", {})
-            vuln_data = session_scan_data.get("vuln_scan", {})
-            target = port_data.get("target") or vuln_data.get("target") or "未知"
-            tool_names = []
-            if port_data:
-                tool_names.append("Nmap (port_scan)")
-            if vuln_data:
-                tool_names.append("Nuclei (vuln_scan)")
-            if "rkhunter" in str(session_scan_data.keys()):
-                tool_names.append("rkhunter")
-            if "clamav" in str(session_scan_data.keys()):
-                tool_names.append("ClamAV")
-
-            import httpx
-            async with httpx.AsyncClient(timeout=15.0, base_url="http://localhost:8100") as cli:
-                resp = await cli.post("/api/v1/report/v2/render", json={
-                    "template": "vuln-advisory",
-                    "data": {
-                        "advisory_id": "AUTO-SCAN",
-                        "advisory_title": f"主动扫描报告 — {target}",
-                        "severity": "信息",
-                        "target": target,
-                        "scan_time": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
-                        "tool_used": " + ".join(tool_names) if tool_names else "自动检测",
-                        "tool_results": (report or "")[:500] if 'report' in dir() else "无数据",
-                        "vulnerabilities": [],
-                        "actions": ["根据扫描结果采取相应加固措施", "定期进行安全扫描"],
-                        "open_ports": "",
-                        "rootkit_findings": "（未检测）",
-                    },
-                })
-                if resp.status_code == 200:
-                    rdata = resp.json().get("data", {})
-                    rmd = rdata.get("raw_markdown", "")
-                    if rmd:
-                        try:
-                            from backend.api.artifacts_routes import store_artifact
-                            store_artifact("doc", f"模板报告_{target}", rmd, session_id=session_id, user_id=user_id)
-                        except Exception:
-                            pass
-                        logger.info(f"Template engine report generated for {target}")
-                        # 用模板报告替换整个回答内容
-                        full_text_response = f"## 📋 EvoGen 模板引擎报告\n\n{rmd}"
-                        yield f"data: {json.dumps({'chunk': full_text_response})}\n\n"
-        except Exception as e:
-            logger.warning(f"Report generation failed: {e}")
+    # ── 安全扫描报告自动生成（已移除，改为用户选择模板后生成）──
+    # 原逻辑已移除：既不覆盖原文也不自动存制品
+    # Agent 会在回复中问用户是否需要模板报告，用户确认后调用 /report/generate-artifact
 
     # 保存助手回复（含报告引擎替换后的内容）
     if full_text_response:
@@ -1945,47 +2157,22 @@ def _recommend_tools(query: str, user_id: str = "default") -> str:
     # ── 维度2：语义关键词匹配 ──
     q = query.lower()
 
-    # Rootkit 检测
-    rootkit_keywords = ["rootkit", "后门", "内核模块", "隐藏进程", "木马", "恶意软件",
-                        "入侵检测", "主机安全", "系统完整性", "可疑进程", "异常进程"]
-    if any(kw in q for kw in rootkit_keywords):
+    # 安全检测相关（根检测、病毒扫描、端口扫描、漏洞扫描、安全通告）
+    security_keywords = ["扫描", "端口", "漏洞", "安全检测", "渗透", "nmap", "nuclei",
+        "开放端口", "服务检测", "cve", "入侵", "攻击面", "靶场", "靶机",
+        "rootkit", "后门", "内核模块", "隐藏进程", "木马", "恶意软件",
+        "入侵检测", "主机安全", "系统完整性", "可疑进程", "异常进程",
+        "病毒", "恶意文件", "文件扫描", "clamav", "恶意代码", "文件检测", "木马文件", "webshell",
+        "通告", "公告", "安全公告", "漏洞通告", "预警", "紧急", "应急", "补丁",
+        "零日", "0day", "远程代码执行", "rce", "文件包含", "sql注入"]
+    if any(kw in q for kw in security_keywords):
         recommendations.append(
-            "- 🧬 **Rootkit 检测** (`rkhunter_scan`): 检查系统后门和隐藏文件\n"
-            "- 🔄 **chkrootkit 扫描** (`chkrootkit_scan`): 互补检测 Rootkit 特征"
-        )
-
-    # 病毒/恶意文件检测
-    virus_keywords = ["病毒", "恶意文件", "文件扫描", "clamav", "恶意代码",
-                      "文件检测", "木马文件", "webshell"]
-    if any(kw in q for kw in virus_keywords):
-        recommendations.append(
-            "- 🦠 **病毒扫描** (`clamav_scan`): 使用 ClamAV 扫描病毒/恶意代码"
-        )
-
-    # 安全扫描
-    scan_keywords = ["扫描", "端口", "漏洞", "安全检测", "渗透", "nmap", "nuclei",
-                     "开放端口", "服务检测", "cve", "入侵", "攻击面", "靶场", "靶机"]
-    if any(kw in q for kw in scan_keywords):
-        recommendations.append(
-            "- 🔍 **端口扫描** (`port_scan`): 检测目标开放端口和服务版本\n"
-            "- 🛡️ **漏洞扫描** (`vuln_scan`): 使用 Nuclei 检测已知漏洞\n"
-            "- 📖 **漏洞知识库**: 自动检索相关 CVE 漏洞信息"
-        )
-
-    # 安全通告 — 触发自动编排链路
-    advisory_keywords = ["通告", "公告", "安全公告", "cve", "cve-", "漏洞通告",
-                         "预警", "紧急", "应急", "补丁", "月份安全公告", "漏洞预警",
-                         "安全动态", "威胁情报", "安全通报", "cisa", "nvd",
-                         "零日", "0day", "远程代码执行", "rce", "文件包含", "sql注入"]
-    if any(kw in q for kw in advisory_keywords):
-        recommendations.append(
-            "📢 **检测到安全通告/威胁情报消息**\n"
-            "  此消息包含安全通告内容，我会自动：\n"
-            "  1. 分析通告中的漏洞信息和受影响产品\n"
-            "  2. 根据通告内容选择最合适的检测工具\n"
-            "  3. 执行检测并收集结果\n"
-            "  4. 调用报告引擎生成固定模板的检测报告\n"
-            "  5. 输出完整的**安全通告检测报告**"
+            "🛡️ **检测到安全扫描/检测需求** — 建议使用 `smart_orchestrator` 工具：\n"
+            "  - 传入 `target`（检测目标）和 `scan_type`（检测类型）\n"
+            "  - 系统自动选择最优检测工具，执行扫描，失败自动切换备选工具\n"
+            "  - 扫描成功后自动生成结构化检测报告\n"
+            "  - scan_type 可选：port_scan / vuln_scan / rootkit / malware / security / all\n"
+            "  - 示例：`smart_orchestrator(target=\"192.168.1.1\", scan_type=\"security\")`"
         )
 
     # 报告生成
@@ -2557,18 +2744,16 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
                 logger.info(f"Fetching URL with Jina: {url[:80]}")
                 page_content = await fetch_jina(url)
                 formatted = format_page_content(page_content, url)
-                _save_message(session_id, "system", formatted)
                 search_context += f"\n\n### 网页: {url}\n{page_content}"
             except Exception as e:
                 logger.warning(f"Jina fetch failed for {url}: {e}")
-                _save_message(session_id, "system", f"⚠️ 无法抓取网页: {url}")
+                search_context += f"\n\n⚠️ 无法抓取网页: {url}"
 
     if msg_should_search and not msg_urls:
         try:
             logger.info(f"Tavily search triggered for: {message[:80]}")
             results = await search_tavily(message)
             formatted = format_search_results(results, message)
-            _save_message(session_id, "system", formatted)
             search_context += "\n\n### 搜索结果\n" + formatted
         except Exception as e:
             logger.warning(f"Tavily search failed: {e}")
@@ -2577,7 +2762,6 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
         try:
             results = await search_tavily(message)
             formatted = format_search_results(results, message)
-            _save_message(session_id, "system", formatted)
             search_context += "\n\n### 搜索结果\n" + formatted
         except Exception as e:
             logger.warning(f"Tavily search failed: {e}")
@@ -2588,8 +2772,8 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
         return
 
     # ── 自主规划与多智能体协作（复杂任务检测） ──
-    # 只在首个用户消息（无历史对话）或明确的新任务时触发
-    should_decompose = not recent_history
+    # 每次用户消息都走任务检测，由 LLM 判断是否需要分解
+    should_decompose = True
     if should_decompose:
         yield f"data: {json.dumps({'status': 'decomposing', 'message': '正在分析任务复杂度…'})}\\n\\n"
         task_plan = await _detect_complex_task(message)
@@ -2617,72 +2801,22 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
             # 汇总结果（仅当报告引擎未覆盖时使用）
             summary = await _generate_summary(message, subtask_text)
 
-            # ── 安全检测报告引擎（完全替换回答内容） ──
+            # ── 安全检测报告提示（不自动生成，仅提示用户） ──
             try:
                 subtask_names = " ".join(s.get("name", "") + " " + s.get("description", "") for s in subtasks)
                 scan_kw = ["port_scan", "vuln_scan", "nmap", "nuclei", "rkhunter", "clamav",
                            "端口扫描", "漏洞扫描", "检测"]
                 if any(k in subtask_names.lower() for k in scan_kw):
-                    sub_results_text = "\n\n".join(subtask_results.values())
-
-                    # 从子任务结果中提取漏洞信息（去重+简洁格式）
-                    vulnerabilities = []
-                    seen_cves = set()
-                    for r in subtask_results.values():
-                        rl = r.lower()
-                        if "cve-" in rl or "nuclei" in rl or "vuln" in rl:
-                            for line in r.split("\n"):
-                                line_stripped = line.strip()
-                                if "cve-" in line_stripped.lower():
-                                    cve_match = re.search(r"(CVE-\d{4}-\d+)", line_stripped, re.IGNORECASE)
-                                    if cve_match:
-                                        vuln_id = cve_match.group(1).upper()
-                                        if vuln_id in seen_cves:
-                                            continue
-                                        seen_cves.add(vuln_id)
-                                        # 从行中提取描述
-                                        after_id = line_stripped[cve_match.end():].strip().lstrip(":：,， \t").strip()
-                                        name = after_id.split("。")[0].split("，")[0].split(",")[0].split("  ")[0].strip()
-                                        if not name or len(name) > 60:
-                                            name = "SimpleHelp 认证绕过漏洞(RCE)"
-                                        vuln_found = not any(kw in rl for kw in ["closed", "not found", "未发现", "0 个漏洞", "0个漏洞"])
-                                        status = "⚠️ 已发现" if vuln_found else "🔴 未确认（目标未运行服务）"
-                                        vulnerabilities.append(f"{vuln_id} - {name}（{status}）")
-
-                    report_data = {
-                        "advisory_id": "CVE-2026-48558",
-                        "advisory_title": "SimpleHelp 认证绕过漏洞 RCE",
-                        "severity": "严重",
-                        "target": "本机 (127.0.0.1)",
-                        "scan_time": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
-                        "tool_used": "Nmap (port_scan) + Nuclei (vuln_scan)",
-                        "tool_results": sub_results_text[:2000],
-                        "vulnerabilities": vulnerabilities or ["CVE-2026-48558 - SimpleHelp 认证绕过漏洞(RCE)（🔴 未确认）"],
-                        "actions": ["升级 SimpleHelp 至 5.5.8 以上版本", "如无使用请确认服务不在非标准端口"],
-                        "open_ports": "",
-                        "rootkit_findings": "（未检测）",
-                    }
-                    import httpx
-                    async with httpx.AsyncClient(timeout=15.0, base_url="http://localhost:8100") as cli:
-                        resp = await cli.post("/api/v1/report/v2/render", json={"template": "vuln-advisory", "data": report_data})
-                        if resp.status_code == 200:
-                            rdata = resp.json().get("data", {})
-                            rmd = rdata.get("raw_markdown", "")
-                            if rmd:
-                                # 存为制品
-                                try:
-                                    from backend.api.artifacts_routes import store_artifact
-                                    store_artifact("doc", f"安全报告_{report_data['target']}", rmd,
-                                                   session_id=session_id, user_id=user_id)
-                                except Exception:
-                                    pass
-                                # 直接用模板报告替换整个回答内容（覆盖LLM摘要）
-                                summary = f"""## 📋 EvoGen 安全检测报告（模板引擎生成）
-
-{rmd}"""
-                                logger.info(f"REPORT ENGINE: replaced summary with template report ({len(summary)} chars)")
+                    summary += (
+                        "\n\n📄 **是否需要将此结果生成一份结构化报告？**\n"
+                        "可用的模板：\n"
+                        "- vuln-advisory — 安全通告检测报告，包含漏洞详情、影响范围和修复建议\n"
+                        "- port-scan — 端口扫描报告，包含目标主机的端口开放情况与服务指纹识别报告\n"
+                        "- server-health — 服务器健康巡检报告\n"
+                        "请确认，我立即为你生成。"
+                    )
             except Exception as e:
-                logger.warning(f"Subtask report engine in summary failed: {e}")
+                logger.warning(f"Subtask report prompt failed: {e}")
 
             # 保存助手回复（含报告引擎追加的内容）并记录经验
             _save_message(session_id, "assistant", summary)
@@ -2707,23 +2841,42 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
         "你可以使用浏览器工具来打开网页、截图、点击元素、填写表单。\\n"
         "当用户说'打开XX网站'、'帮我搜索'、'截图'等时，直接调用对应工具。\\n"
         "\\n"
-        "## 安全检测工具（重要——请优先使用真实工具，不要仅用文字描述）\\n"
-        "当用户请求安全检测、漏洞扫描、端口扫描、rootkit检查、病毒查杀等内容时，"
-        "你**必须**调用以下真实工具来执行检测，而非仅用文字回复描述。\\n"
+        "## ⚠️ 安全检测工具（硬性规则——必须遵守）\\n"
+        "当用户请求**安全检测、漏洞扫描、端口扫描、Rootkit检查、病毒查杀、CVE查询**等内容时：\\n"
         "\\n"
-        "可调用的安全工具：\\n"
-        "- `port_scan(target, ports?)`: 端口扫描（nmap），检测开放端口和服务版本\\n"
-        "- `vuln_scan(target, severity?)`: 漏洞扫描（Nuclei），检测已知CVE漏洞\\n"
-        "- `rkhunter_scan(check_all?)`: Rootkit检测，检查后门/隐藏文件/内核模块\\n"
-        "- `chkrootkit_scan(quick?)`: chkrootkit检测，互补rkhunter\\n"
+        "### 规则1：必须调 smart_orchestrator（唯一方式）\\n"
+        "**不得逐个调 port_scan/vuln_scan/rkhunter_scan 等单独工具**，也**不得仅输出文字描述代替实际扫描**。\\n"
+        "一律使用 `smart_orchestrator` 这一个工具，传入 target 和 scan_type 即可。\\n"
+        "\\n"
+        "### 规则2：scan_type 选择指南\\n"
+        "- **全面检测**（端口+漏洞+Rootkit）→ `scan_type=\"security\"`（推荐）\\n"
+        "- **仅端口扫描** → `scan_type=\"port_scan\"`\\n"
+        "- **仅漏洞扫描** → `scan_type=\"vuln_scan\"`\\n"
+        "- **仅 Rootkit 检测** → `scan_type=\"rootkit\"`\\n"
+        "- **仅病毒扫描** → `scan_type=\"malware\"`\\n"
+        "\\n"
+        "### 规则3：编排器会自动处理以下事项\\n"
+        "- 按 failover 链执行工具，一个失败自动切换下一个\\n"
+        "- 扫描成功后自动生成结构化安全检测报告并存入制品面板\\n"
+        "- 无需手动调 generate_report\\n"
+        "\\n"
+        "调用示例：`smart_orchestrator(target=\"192.168.1.1\", scan_type=\"security\")`\\n"
+        "\\n"
+        "### 对话示例（必须严格遵守）：\\n"
+        "用户说：「对 127.0.0.1 做端口扫描」→ 你应该直接调 smart_orchestrator(target=\"127.0.0.1\", scan_type=\"port_scan\")，\\n"
+        "                             **不要回复\"好的\"或\"马上\"等任何文字**，直接执行工具调用。\\n"
+        "用户说：「扫描 10.0.0.5 的漏洞」→ smart_orchestrator(target=\"10.0.0.5\", scan_type=\"vuln_scan\")，\\n"
+        "                             **直接调工具，不要回复文字**。\\n"
+        "用户说：「查一下有没有 rootkit」→ smart_orchestrator(target=\"localhost\", scan_type=\"rootkit\")，\\n"
+        "                             **直接调工具，不要回复文字**。\\n"
+        "\\n"
+        "### 备选（仅当 smart_orchestrator 不适用时）\\n"
+        "以下工具供特殊场景使用：\\n"
+        "- `port_scan(target, ports?, arguments?)`: 端口扫描（nmap）\\n"
+        "- `vuln_scan(target, severity?, templates?)`: 漏洞扫描（Nuclei）\\n"
+        "- `rkhunter_scan(check_all?)`: Rootkit检测\\n"
+        "- `chkrootkit_scan(quick?)`: chkrootkit检测\\n"
         "- `clamav_scan(target, recursive?)`: 病毒/恶意软件扫描\\n"
-        "\\n"
-        "**工具调用规则（重要）：**\\n"
-        "1. 安全通告类消息（含CVE、漏洞名称、影响版本、供应商等），先调port_scan扫描目标端口，再调vuln_scan检测漏洞\\n"
-        "2. 端口扫描默认1-1000最常用端口，目标用用户指定的IP/域名\\n"
-        "3. 漏洞扫描默认severity=critical,high\\n"
-        "4. 扫描完成后，自动调用报告引擎(v2/render)生成固定模板报告，使用 vuln-advisory 模板\\n"
-        "5. 所有工具调用自动执行，无需向用户确认。\\n"
         "\\n"
         "## 文档生成\\n"
         "你可以直接生成 Markdown 格式的内容（代码块、列表、表格等），"
@@ -2733,7 +2886,7 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
 
     # ── 注入用户自定义技能 ──
     try:
-        skills_text = _get_skills_for_user(user_id)
+        skills_text = _get_skills_for_user(user_id, user_message=message)
         if skills_text:
             system_prompt += skills_text
     except Exception as e:

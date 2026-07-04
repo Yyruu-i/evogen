@@ -206,6 +206,131 @@ TEMPLATES: dict[str, dict[str, Any]] = {
             },
         ],
     },
+    # ── 安全检查汇总报告（客户模板）──
+    "security-audit": {
+        "name": "安全检查汇总报告",
+        "version": "1.0",
+        "description": "基于多厂商安全检测工具原始输出的汇总报告，包含资产发现、漏洞清单、整改建议和攻击路径复盘",
+        "sections": [
+            {
+                "key": "summary",
+                "label": "检测概述",
+                "required": True,
+                "fields": [
+                    {"key": "report_id", "label": "报告编号", "type": "str"},
+                    {"key": "project_name", "label": "项目名称", "type": "str"},
+                    {"key": "target_network", "label": "检查范围", "type": "str"},
+                    {"key": "check_time", "label": "检查时间", "type": "str"},
+                    {"key": "vendor_list", "label": "参与检测厂商/工具", "type": "text"},
+                    {"key": "total_findings", "label": "检测结果汇总", "type": "text"},
+                ],
+            },
+            {
+                "key": "high_risk",
+                "label": "高危漏洞清单",
+                "required": True,
+                "fields": [
+                    {"key": "rce_vulns", "label": "远程代码执行/严重漏洞", "type": "list"},
+                    {"key": "weak_passwords", "label": "弱口令/未授权访问", "type": "list"},
+                    {"key": "config_violations", "label": "配置严重不合规", "type": "list"},
+                    {"key": "penetration_results", "label": "渗透验证结果", "type": "text"},
+                ],
+            },
+            {
+                "key": "medium_risk",
+                "label": "中危漏洞清单",
+                "required": False,
+                "fields": [
+                    {"key": "medium_vulns", "label": "中危漏洞列表", "type": "list"},
+                ],
+            },
+            {
+                "key": "recommendations",
+                "label": "综合整改建议",
+                "required": True,
+                "fields": [
+                    {"key": "urgent_fixes", "label": "紧急整改（24小时内）", "type": "list"},
+                    {"key": "limited_fixes", "label": "限期整改（7天内）", "type": "list"},
+                    {"key": "routine_fixes", "label": "常规整改（30天内）", "type": "list"},
+                ],
+            },
+            {
+                "key": "attack_path",
+                "label": "攻击路径复盘",
+                "required": False,
+                "fields": [
+                    {"key": "attack_paths", "label": "攻击路径", "type": "text"},
+                    {"key": "impact_assessment", "label": "影响评估", "type": "text"},
+                ],
+            },
+            {
+                "key": "conclusion",
+                "label": "结论",
+                "required": True,
+                "fields": [
+                    {"key": "overall_risk", "label": "综合风险评级", "type": "str"},
+                    {"key": "final_conclusion", "label": "结论", "type": "text"},
+                ],
+            },
+            {
+                "key": "attachments",
+                "label": "附件",
+                "required": False,
+                "fields": [
+                    {"key": "attachment_list", "label": "附件清单", "type": "list"},
+                ],
+            },
+        ],
+    },
+    # ── 厂商检测报告模板（通用）──
+    "vendor-report": {
+        "name": "厂商检测报告",
+        "version": "1.0",
+        "description": "单厂商安全检测工具的原始输出报告，包含扫描概览、漏洞详情和修复建议",
+        "sections": [
+            {
+                "key": "summary",
+                "label": "报告概览",
+                "required": True,
+                "fields": [
+                    {"key": "report_id", "label": "报告编号", "type": "str"},
+                    {"key": "vendor_name", "label": "厂商名称", "type": "str"},
+                    {"key": "product_name", "label": "产品名称", "type": "str"},
+                    {"key": "scan_time", "label": "扫描时间", "type": "str"},
+                    {"key": "target", "label": "扫描目标", "type": "str"},
+                    {"key": "alive_hosts", "label": "存活IP数", "type": "str"},
+                    {"key": "total_findings", "label": "总发现数", "type": "str"},
+                    {"key": "high_count", "label": "高危", "type": "str"},
+                    {"key": "medium_count", "label": "中危", "type": "str"},
+                    {"key": "low_count", "label": "低危", "type": "str"},
+                ],
+            },
+            {
+                "key": "high_risk_detail",
+                "label": "高危漏洞详情",
+                "required": True,
+                "fields": [
+                    {"key": "high_risk_items", "label": "高危漏洞列表", "type": "list"},
+                ],
+            },
+            {
+                "key": "medium_risk_detail",
+                "label": "中危漏洞摘要",
+                "required": False,
+                "fields": [
+                    {"key": "medium_risk_items", "label": "中危漏洞列表", "type": "list"},
+                ],
+            },
+            {
+                "key": "recommendations",
+                "label": "修复建议",
+                "required": False,
+                "fields": [
+                    {"key": "actions", "label": "修复措施", "type": "list"},
+                ],
+            },
+        ],
+    },
 }
 
 

@@ -376,7 +376,7 @@ ALL_TOOLS: list[dict] = BROWSER_TOOLS + [
                 "type": "object",
                 "properties": {
                     "target": {"type": "string", "description": "目标IP地址"},
-                    "template": {"type": "string", "description": "报告模板: standard（标准）/ customer（客户汇总模板）"},
+                    "template": {"type": "string", "description": "报告模板: standard（标准）/ customer（客户汇总模板）/ security-audit（安全检查汇总报告-完整版）/ vendor-report（厂商检测报告）"},
                 },
                 "required": ["target"],
             },

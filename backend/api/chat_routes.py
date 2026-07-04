@@ -164,14 +164,185 @@ BROWSER_TOOLS: list[dict] = [
 # 全部工具（可后续扩展 terminal、web_search 等）
 # 每个工具包含 vendor（厂商/项目名）和 purpose（用途说明），供前端展示和 LLM 选型参考
 ALL_TOOLS: list[dict] = BROWSER_TOOLS + [
-    # ── 智能编排工具（首选！安全检测用这个，不要用下面的具体工具）──
+    # ── 安全检查工具（mcp_security.py）（首选！TOP500端口 + 服务识别 + 基线核查 + 报告）──
+    {
+        "type": "function",
+        "function": {
+            "name": "security_scan",
+            "description": "【★首选】安全检查 — 扫描单个IP的TOP500开放端口 + nmap -sV服务版本识别 + 风险分级分析。比内置port_scan强100倍（500端口 vs 5端口），支持vendor failover。当用户说 扫描/检查/检测/安全 时首选此工具。",
+            "vendor": "EvoGen",
+            "purpose": "安全检测 / TOP500端口扫描+服务识别+风险分析（首选！）",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "目标IP地址"},
+                    "vendor": {"type": "string", "description": "厂商名称（可选，如: 绿盟、天融信、长亭科技），自动failover"},
+                    "scan_type": {"type": "string", "description": "扫描类型: port_scan（默认）/ full"},
+                },
+                "required": ["target"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ping_sweep",
+            "description": "【★资产发现】ICMP存活探测 — 扫描目标网段，发现存活主机IP列表。用于检测前的资产摸底阶段，发现哪些主机在线。",
+            "vendor": "EvoGen",
+            "purpose": "资产探测 / 存活主机发现",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "subnet": {"type": "string", "description": "目标网段，如 192.168.1.0/24"},
+                },
+                "required": ["subnet"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "baseline_check",
+            "description": "【★等保核查】等保基线核查 — 检查指定IP是否符合等保2.0三级要求，覆盖 边界防护/访问控制/身份鉴别/日志审计/漏洞管理/最小权限 6类基线项。",
+            "vendor": "EvoGen",
+            "purpose": "安全检测 / 等保基线核查",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "目标IP地址"},
+                },
+                "required": ["target"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "evidence_snapshot",
+            "description": "【★证据固化】— 为指定IP的最新扫描结果生成SHA256哈希+时间戳的证据记录，确保检测结果的司法可追溯性。扫描完成后自动调用。",
+            "vendor": "EvoGen",
+            "purpose": "安全检测 / 证据固化",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "目标IP地址"},
+                    "scan_id": {"type": "string", "description": "指定扫描记录ID（可选，默认最新）"},
+                },
+                "required": ["target"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "retest_compare",
+            "description": "【★复测对比】— 对比指定IP最近两次扫描记录，标注新增/关闭的端口和风险等级变化，确保复测逻辑一致性。修复后复查用。",
+            "vendor": "EvoGen",
+            "purpose": "安全检测 / 复测对比",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "目标IP地址"},
+                },
+                "required": ["target"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "gen_security_report",
+            "description": "【★出报告】生成安全检查报告 — 扫描完成后必须调用此工具输出Markdown格式的结构化安全检测报告。6种模板可选：standard（标准）/ customer（客户）/ anheng-report（安恒）/ nsfocus-report（绿盟）/ chaitin-report（长亭）/ vackbot-report（墨云）。",
+            "vendor": "EvoGen",
+            "purpose": "报告生成 / 安全检测报告",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "目标IP地址"},
+                    "template": {"type": "string", "description": "报告模板: standard（标准）/ customer（客户汇总）/ anheng-report（安恒明鉴）/ nsfocus-report（绿盟）/ chaitin-report（长亭牧云）/ vackbot-report（墨云VackBot）"},
+                },
+                "required": ["target"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "batch_scan",
+            "description": "批量安全扫描 — 对多个目标批量执行安全检查，自动汇总结果和风险统计数据。",
+            "vendor": "EvoGen",
+            "purpose": "批量检测 / 多目标安全扫描",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "targets": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "目标IP地址列表，如 [\"192.168.1.1\", \"192.168.1.2\"]",
+                    },
+                    "scan_type": {"type": "string", "description": "扫描类型: port_scan（默认）/ full"},
+                    "vendor": {"type": "string", "description": "厂商名称（可选）"},
+                },
+                "required": ["targets"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "validate_report",
+            "description": "报告质量校验 — 检查安全报告数据的完整性（必填字段）、格式规范性（IP/日期/风险等级）、数值合理性（端口号）。",
+            "vendor": "EvoGen",
+            "purpose": "质量保障 / 报告数据校验",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "目标IP地址"},
+                },
+                "required": ["target"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "gen_selection_plan",
+            "description": "生成厂商选型方案 — 按检测类型推荐最优安全厂商工具。支持7类检测覆盖30+安全厂商的推荐策略。",
+            "vendor": "EvoGen",
+            "purpose": "智能选型 / 工具推荐",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target_desc": {"type": "string", "description": "目标描述（可选，如: 互联网企业Web服务器）"},
+                    "exclude_types": {"type": "string", "description": "排除的检测类型（可选，逗号分隔）"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_asset_profile",
+            "description": "查询资产档案 — 查看指定IP的历史扫描记录、风险变化趋势、上次使用的工具和风险等级。",
+            "vendor": "EvoGen",
+            "purpose": "资产管理 / 历史追溯",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "目标IP地址"},
+                },
+                "required": ["target"],
+            },
+        },
+    },
+    # ── 智能编排工具（备选！仅当上述安全工具不可用时报废）──
     {
         "type": "function",
         "function": {
             "name": "smart_orchestrator",
-            "description": "[EvoGen] 智能安全扫描编排 — 自动推荐最适合的检测工具，按优先级执行扫描，失败自动切换备选工具，最后自动生成结构化安全检测报告。一条命令完成全流程。",
+            "description": "【备选：旧编排器】智能安全扫描编排 — 自动推荐检测工具并按优先级执行。已废弃，仅当 security_scan/baseline_check 等新工具不可用时作为降级方案使用。使用后必须在报告中标注\"使用了降级工具\"。",
             "vendor": "EvoGen",
-            "purpose": "智能编排 / 一键扫描+报告全流程（端口扫描/漏洞扫描/Rootkit/病毒检测，首选此工具）",
+            "purpose": "【备选】智能编排（已废弃，首选security_scan）",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -193,14 +364,14 @@ ALL_TOOLS: list[dict] = BROWSER_TOOLS + [
             },
         },
     },
-    # ── 端口扫描类 ──
+    # ── 旧端口扫描类（备选！仅5个端口，远不如security_scan的TOP500）──
     {
         "type": "function",
         "function": {
             "name": "port_scan",
-            "description": "[nmap] 端口扫描 — 扫描目标 IP/域名的开放端口、服务版本、操作系统指纹",
+            "description": "【备选：旧端口扫描】[nmap] 端口扫描 — 仅扫描5个常见端口。建议使用 security_scan（TOP500端口+服务识别+风险分析），比本工具强100倍。",
             "vendor": "nmap.org",
-            "purpose": "网络资产发现 / 端口服务探测",
+            "purpose": "【备选】网络资产发现（建议用 security_scan）",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -212,14 +383,14 @@ ALL_TOOLS: list[dict] = BROWSER_TOOLS + [
             },
         },
     },
-    # ── 漏洞扫描类 ──
+    # ── 旧漏洞扫描类（备选）──
     {
         "type": "function",
         "function": {
             "name": "vuln_scan",
-            "description": "[Nuclei] 漏洞扫描 — 使用 ProjectDiscovery Nuclei 对目标 URL/IP 进行多模板漏洞检测",
+            "description": "【备选：旧漏洞扫描】[Nuclei] 漏洞扫描 — 使用 ProjectDiscovery Nuclei 对目标 URL/IP 进行多模板漏洞检测。已废弃，优先使用 security_scan。",
             "vendor": "projectdiscovery.io",
-            "purpose": "通用漏洞检测 / CVE 排查",
+            "purpose": "【备选】通用漏洞检测（建议用 security_scan）",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -279,14 +450,14 @@ ALL_TOOLS: list[dict] = BROWSER_TOOLS + [
             },
         },
     },
-    # ── 报告生成类 ──
+    # ── 旧报告生成类（备选！gen_security_report 更强）──
     {
         "type": "function",
         "function": {
             "name": "generate_report",
-            "description": "[模板引擎] 报告生成 — 将扫描/检测结果用模板渲染成结构化报告并存入制品面板",
+            "description": "【备选：旧报告工具】[模板引擎] 报告生成 — 将扫描/检测结果用模板渲染成结构化报告并存入制品面板。已废弃，建议使用 gen_security_report（6种模板+厂商格式）。",
             "vendor": "EvoGen",
-            "purpose": "报告生成 / 制品存储",
+            "purpose": "【备选】报告生成（建议用 gen_security_report）",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -305,180 +476,6 @@ ALL_TOOLS: list[dict] = BROWSER_TOOLS + [
                     },
                 },
                 "required": ["template", "data"],
-            },
-        },
-    },
-    # ── 安全检查工具（mcp_security.py）──
-    {
-        "type": "function",
-        "function": {
-            "name": "ping_sweep",
-            "description": "ICMP存活探测 — 扫描目标网段，发现存活主机IP列表。用于检测前的资产摸底阶段。",
-            "vendor": "EvoGen",
-            "purpose": "资产探测 / 存活主机发现",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "subnet": {"type": "string", "description": "目标网段，如 192.168.1.0/24"},
-                },
-                "required": ["subnet"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "security_scan",
-            "description": "安全检查 — 对单个IP执行端口扫描+风险分析，检查常见高危端口并输出风险等级和修复建议。",
-            "vendor": "EvoGen",
-            "purpose": "安全检测 / 端口扫描+风险分析",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "target": {"type": "string", "description": "目标IP地址"},
-                    "vendor": {"type": "string", "description": "厂商名称（可选，如: 绿盟、天融信、长亭科技）"},
-                    "scan_type": {"type": "string", "description": "扫描类型: port_scan（默认）/ full"},
-                },
-                "required": ["target"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "batch_scan",
-            "description": "批量安全扫描 — 对多个目标批量执行安全检查，自动汇总结果和风险统计数据。",
-            "vendor": "EvoGen",
-            "purpose": "批量检测 / 多目标安全扫描",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "targets": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "目标IP地址列表，如 [\"192.168.1.1\", \"192.168.1.2\"]",
-                    },
-                    "scan_type": {"type": "string", "description": "扫描类型: port_scan（默认）/ full"},
-                    "vendor": {"type": "string", "description": "厂商名称（可选）"},
-                },
-                "required": ["targets"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "gen_security_report",
-            "description": "生成安全检查报告 — 按模板生成Markdown格式的结构化安全检测报告（含端口清单、风险等级、修复建议）。",
-            "vendor": "EvoGen",
-            "purpose": "报告生成 / 安全检测报告",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "target": {"type": "string", "description": "目标IP地址"},
-                    "template": {"type": "string", "description": "报告模板: standard（标准）/ customer（客户汇总）/ anheng-report（安恒明鉴）/ nsfocus-report（绿盟）/ chaitin-report（长亭牧云）/ vackbot-report（墨云VackBot）"},
-                },
-                "required": ["target"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "validate_report",
-            "description": "报告质量校验 — 检查安全报告数据的完整性（必填字段）、格式规范性（IP/日期/风险等级）、数值合理性（端口号）。",
-            "vendor": "EvoGen",
-            "purpose": "质量保障 / 报告数据校验",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "target": {"type": "string", "description": "目标IP地址"},
-                },
-                "required": ["target"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "gen_selection_plan",
-            "description": "生成厂商选型方案 — 按检测类型推荐最优安全厂商工具。支持7类检测覆盖30+安全厂商的推荐策略。",
-            "vendor": "EvoGen",
-            "purpose": "智能选型 / 工具推荐",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "target_desc": {"type": "string", "description": "目标描述（可选，如: 互联网企业Web服务器）"},
-                    "exclude_types": {"type": "string", "description": "排除的检测类型（可选，逗号分隔）"},
-                },
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_asset_profile",
-            "description": "查询资产档案 — 查看指定IP的历史扫描记录、风险变化趋势、上次使用的工具和风险等级。",
-            "vendor": "EvoGen",
-            "purpose": "资产管理 / 历史追溯",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "target": {"type": "string", "description": "目标IP地址"},
-                },
-                "required": ["target"],
-            },
-        },
-    },
-    # ── 等保基线核查 ──
-    {
-        "type": "function",
-        "function": {
-            "name": "baseline_check",
-            "description": "等保基线核查 — 检查指定IP是否符合等保2.0三级要求，覆盖边界防护/访问控制/身份鉴别/日志审计/漏洞管理/最小权限6类基线项。",
-            "vendor": "EvoGen",
-            "purpose": "安全检测 / 等保基线核查",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "target": {"type": "string", "description": "目标IP地址"},
-                },
-                "required": ["target"],
-            },
-        },
-    },
-    # ── 证据固化 ──
-    {
-        "type": "function",
-        "function": {
-            "name": "evidence_snapshot",
-            "description": "证据固化 — 为指定IP的最新扫描结果生成SHA256哈希+时间戳的证据记录，确保检测结果的司法可追溯性。",
-            "vendor": "EvoGen",
-            "purpose": "安全检测 / 证据固化",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "target": {"type": "string", "description": "目标IP地址"},
-                    "scan_id": {"type": "string", "description": "指定扫描记录ID（可选，默认最新）"},
-                },
-                "required": ["target"],
-            },
-        },
-    },
-    # ── 复测确认 ──
-    {
-        "type": "function",
-        "function": {
-            "name": "retest_compare",
-            "description": "复测确认 — 对比指定IP最近两次扫描记录，标注新增/关闭端口和风险等级变化，确保复测逻辑一致性。",
-            "vendor": "EvoGen",
-            "purpose": "安全检测 / 复测对比",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "target": {"type": "string", "description": "目标IP地址"},
-                },
-                "required": ["target"],
             },
         },
     },
@@ -671,23 +668,26 @@ SUBTASK_DETECTION_PROMPT = """你是一个任务规划专家。请分析用户�
 - "帮我开发一个登录功能" → 需要"设计数据库"、"编写后端API"、"开发前端页面"、"编写测试" → 复杂任务
 - "帮我查一下今天的天气" → 简单任务
 - "帮我写一个 Python 脚本解析 CSV 文件并生成报告" → 复杂任务（解析+生成报告可拆分）
-- "帮我扫描127.0.0.1的端口然后做漏洞检测" → 简单任务（系统自动用 smart_orchestrator 一站式完成）
-- "CVE-2026-48558 SimpleHelp认证绕过漏洞，请检测本机" → 简单任务（系统自动调 smart_orchestrator）
-- "扫描 192.168.1.1 的漏洞" → 简单任务
-- "查一下本机有没有被植入 rootkit" → 简单任务
+- "扫描 192.168.1.1 的端口" → 简单任务
+- "检查 127.0.0.1 的安全性" → 简单任务
 - "对服务器做全面安全检测" → 简单任务
 
 如果是复杂任务，请输出 JSON 格式：
-{"is_complex": true, "task_title": "任务标题", "subtasks": [{"id": 1, "name": "子任务名", "description": "子任务描述", "tools": ["port_scan", "vuln_scan"], "depends_on": []}, ...]}
+{"is_complex": true, "task_title": "任务标题", "subtasks": [{"id": 1, "name": "子任务名", "description": "子任务描述", "tools": ["security_scan"], "depends_on": []}, ...]}
 
-tools字段：该子任务需要的工具列表，可选值有 port_scan, vuln_scan, rkhunter_scan, chkrootkit_scan, clamav_scan, web_search, browser_navigate, browser_screenshot
+tools字段：该子任务需要的工具列表
 depends_on字段：该子任务依赖的其他子任务id列表（空数组表示无依赖）
-必填字段说明：
-- 端口扫描/网络资产发现：tools = ["port_scan"]
+必填字段说明（按优先级排序）：
+- 端口扫描/安全检测/检查安全性：tools = ["security_scan"]（首选！TOP500端口+服务识别+风险分析）
+- 存活探测/资产发现：tools = ["ping_sweep"]
+- 等保基线核查/合规检查：tools = ["baseline_check"]
+- 报告生成/出报告：tools = ["gen_security_report"]
+- 批量扫描/多目标检测：tools = ["batch_scan"]
+- 旧端口扫描（仅当 security_scan 不可用时降级）：tools = ["port_scan"]
 - 漏洞扫描/CVE检测：tools = ["vuln_scan"]
 - Rootkit/后门检测：tools = ["rkhunter_scan", "chkrootkit_scan"]
 - 病毒/恶意文件扫描：tools = ["clamav_scan"]
-- 当需要组合检测时（如先扫端口再扫漏洞），将 port_scan 和 vuln_scan 分别拆为两个子任务并设置 depends_on
+- 当需要组合检测时，按顺序拆为多个子任务并设置 depends_on
 
 如果是简单任务，请输出：
 {"is_complex": false}

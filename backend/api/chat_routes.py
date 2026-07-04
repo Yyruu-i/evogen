@@ -2068,6 +2068,8 @@ async def _call_llm_stream(
         payload["tool_choice"] = "auto"
     if model_name == "deepseek-v4-pro":
         payload["reasoning_effort"] = "high"
+        # DeepSeek-V3.2+ 支持 thinking + tools 共存
+        # 但需确保 messages 中正确回传 reasoning_content
         payload["extra_body"] = {"thinking": {"type": "enabled"}}
 
     accumulated_content = ""
@@ -3124,11 +3126,21 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
         "\\n"
         "### 规则3：全自动编排（一句话触发完整流程）\\n"
         "用户说「检查 192.168.1.1 的安全性」时，你应该自动执行完整流程：\\n"
-        "步骤1 → `ping_sweep(\"192.168.1.1\")` 或 `security_scan(\"192.168.1.1\", vendor=\"绿盟,天融信,安恒\")`\\n"
+        "步骤1 → `security_scan(\"192.168.1.1\", vendor=\"绿盟,天融信,安恒\")`\\n"
         "步骤2 → `baseline_check(\"192.168.1.1\")`\\n"
         "步骤3 → `evidence_snapshot(\"192.168.1.1\")`\\n"
         "步骤4 → `gen_security_report(\"192.168.1.1\", template=\"standard\")`\\n"
         "**不要问用户'要不要出报告'，直接出。不要每一步都停下来等确认，你是有能力编排的 Agent。**\\n"
+        "\\n"
+        "### 规则3.1：禁止输出纯文字代替工具调用（硬性指令）\\n"
+        "**当用户请求安全检测时，你的第一轮回复必须包含至少一个工具调用（tool_call）。**\\n"
+        "不允许出现以下行为：\\n"
+        "- ❌ 只输出「好的，我来检查 127.0.0.1 的安全性」而不调用工具\\n"
+        "- ❌ 在 reasoning/thinking 中规划了工具调用但最终只输出文字\\n"
+        "- ❌ 输出「根据规则，我需要执行完整流程...」然后列举步骤但不实际调工具\\n"
+        "正确的行为：\\n"
+        "- ✅ 直接调 `security_scan` 等工具，**在第一个 SSE chunk 中就输出 tool_call**\\n"
+        "- ✅ 工具调用的同时可以加 text 说明，但工具调用必须有\\n"
         "\\n"
         "### 规则4：内置旧工具只有在上述新工具不适用时才用\\n"
         "以下工具是**备选**（仅当新安全工具不能处理时）：\\n"

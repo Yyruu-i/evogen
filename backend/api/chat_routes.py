@@ -2068,8 +2068,6 @@ async def _call_llm_stream(
         payload["tool_choice"] = "auto"
     if model_name == "deepseek-v4-pro":
         payload["reasoning_effort"] = "high"
-        # DeepSeek-V3.2+ 支持 thinking + tools 共存
-        # 但需确保 messages 中正确回传 reasoning_content
         payload["extra_body"] = {"thinking": {"type": "enabled"}}
 
     accumulated_content = ""
@@ -2144,15 +2142,11 @@ async def _call_llm_stream(
 
         # 检查最后一条 chunks 的 finish_reason
         # DeepSeek 流式模式下 tool_calls 可能在 finish chunk 出现
+        # 注意：finish chunk 也可能没有 delta，只有 finish_reason
         if not accumulated_tool_calls and not has_reasoning and not accumulated_content:
             pass  # 没有数据，继续到下一轮
 
-        # 有 reasoning → yield content（如果有），不提前 return（可能还有 tool_calls）
-        if has_reasoning and accumulated_content:
-            yield {"type": "content", "content": accumulated_content}
-            return
-
-        # 有 tool_calls → yield tool_calls
+        # 有 tool_calls → 优先 yield tool_calls（即使有 reasoning 也优先）
         if accumulated_tool_calls:
             calls = []
             for idx in sorted(accumulated_tool_calls.keys()):
@@ -2167,6 +2161,11 @@ async def _call_llm_stream(
                     "arguments": args,
                 })
             yield {"type": "tool_calls", "calls": calls}
+            return
+
+        # 有 reasoning 且有 content → yield content（thinking 模型纯文本回答）
+        if has_reasoning and accumulated_content:
+            yield {"type": "content", "content": accumulated_content}
             return
 
         # 纯文本 → yield content（chat 模型）
@@ -2217,10 +2216,12 @@ async def _tool_loop_stream_generator(
         tool_calls_for_round = None
         text_content_for_round = ""
         reasoning_yielded = False
+        last_reasoning_text = ""
 
         async for evt in _call_llm_stream(llm_messages, tools=_get_all_tools_for_user(user_id)):
             if evt["type"] == "reasoning":
                 reasoning_yielded = True
+                last_reasoning_text += evt["content"]
                 yield f"data: {json.dumps({'status': 'reasoning', 'content': evt['content']})}\n\n"
             elif evt["type"] == "content":
                 text_content_for_round = evt["content"]
@@ -2320,7 +2321,8 @@ async def _tool_loop_stream_generator(
                 )
 
                 # 将工具调用和结果追加到 messages
-                llm_messages.append({
+                # ⚠️ thinking mode: 必须回传 reasoning_content，否则 API 400
+                assistant_msg = {
                     "role": "assistant",
                     "content": "",
                     "tool_calls": [{
@@ -2331,7 +2333,11 @@ async def _tool_loop_stream_generator(
                             "arguments": json.dumps(tool_args, ensure_ascii=False),
                         },
                     }],
-                })
+                }
+                # 如果有 reasoning_content（deepseek-v4-pro thinking mode），必须回传
+                if last_reasoning_text:
+                    assistant_msg["reasoning_content"] = last_reasoning_text
+                llm_messages.append(assistant_msg)
                 llm_messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call_id,
@@ -3114,15 +3120,17 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
         "- `retest_compare(target)` → 对比最近两次扫描的端口变化和风险变化。\\n"
         "  用户说'复测'、'对比'、'复查'时用这个。\\n"
         "\\n"
-        "### 规则2：检测后，自动用 gen_security_report 出报告\\n"
+        "### 规则2：检测后，自动选最优模板出报告\\n"
         "完成扫描后，**必须调用** `gen_security_report(target, template)` 输出 Markdown 报告。\\n"
-        "模板选择：\\n"
-        "- `standard` — 标准安全检测报告（通用）\\n"
-        "- `customer` — 客户汇总报告（面向非技术客户）\\n"
-        "- `anheng-report` — 安恒明鉴格式\\n"
-        "- `nsfocus-report` — 绿盟科技格式\\n"
-        "- `chaitin-report` — 长亭牧云格式\\n"
-        "- `vackbot-report` — 墨云VackBot格式\\n"
+        "**不要问用户'用哪个模板'，也不要推荐让用户选。你自己根据扫描结果选择最合适的模板，在调用时填写 template 参数。**\\n"
+        "模板选择逻辑：\\n"
+        "- 一般安全检查 → `standard`（标准安全检测报告）\\n"
+        "- 面向客户汇报 → `customer`（客户汇总报告）\\n"
+        "- 安恒设备/明鉴格式 → `anheng-report`\\n"
+        "- 绿盟设备格式 → `nsfocus-report`\\n"
+        "- Web应用检测 → `chaitin-report`（长亭牧云格式）\\n"
+        "- 渗透测试场景 → `vackbot-report`（墨云VackBot格式）\\n"
+        "在回复中**说明你选择了哪个模板以及选择的理由**（例如：'本次采用 standard 模板，适用通用安全检测场景'）。\\n"
         "\\n"
         "### 规则3：全自动编排（一句话触发完整流程）\\n"
         "用户说「检查 192.168.1.1 的安全性」时，你应该自动执行完整流程：\\n"

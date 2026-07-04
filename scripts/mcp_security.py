@@ -444,120 +444,6 @@ def gen_selection_plan(target_desc: str = "", exclude_types: str = "") -> dict:
     }
 
 
-def gen_report(target: str, template: str = "standard") -> dict:
-    """生成安全检查报告.
-
-    Args:
-        target: 目标 IP
-        template: 报告模板（standard / customer）
-
-    Returns:
-        {"success": bool, "data": {...}, "error": str|None}
-    """
-    # 从数据库取最新记录
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    row = conn.execute(
-        "SELECT * FROM scan_records WHERE target = ? ORDER BY id DESC LIMIT 1",
-        (target,)
-    ).fetchone()
-    conn.close()
-
-    if not row:
-        return {"success": False, "data": {}, "error": f"未找到 {target} 的扫描记录，请先执行 security_scan"}
-
-    record = json.loads(row["raw_result"])
-    ports = record.get("ports", [])
-    high_risk_ports = record.get("high_risk_ports", [])
-    recs = record.get("recommendations", [])
-
-    ports_table = "\n".join([f"| {p['port']} | {p['service']} | {'⚠️ 高危' if p.get('high_risk') else 'open'} |" for p in ports])
-    recs_list = "\n".join([f"{i+1}. {r}" for i, r in enumerate(recs)])
-
-    if template == "standard":
-        report = f"""# 安全检查报告
-
-## 基本信息
-- **目标**: {target}
-- **检查时间**: {record.get('scan_time', '未知')}
-- **风险等级**: **{record.get('risk_level', '未知')}**
-- **检测厂商**: {record.get('vendor', 'N/A')}
-
-## 端口开放情况
-| 端口 | 服务 | 状态 |
-|------|------|------|
-{ports_table if ports_table else '| (无) | — | — |'}
-
-## 风险分析
-{record.get('summary', '无数据')}
-
-## 修复建议
-{recs_list if recs_list else '无特殊建议'}
-
-## 监管关注
-{'⚠️ 发现高危端口，建议立即检查' if high_risk_ports else '✅ 未发现高危端口'}
-{'⚠️ 开放端口过多(>10)，建议最小化原则梳理' if len(ports) > 10 else ''}
-
----
-*报告由安全检查 Agent 自动生成 — {record.get('scan_time', '')}*
-"""
-    elif template == "customer":
-        # 客户汇总模板
-        report = f"""# 安全检查汇总报告
-
-**报告编号**: SEC-CHK-{datetime.now().strftime('%Y%m%d')}-001
-**检查目标**: {target}
-**检查时间**: {record.get('scan_time', '未知')}
-**编制单位**: 安全检测中心
-**报告日期**: {datetime.now().strftime('%Y年%m月%d日')}
-
----
-
-> 声明：本报告基于安全检测工具的原始输出汇总编制。
-
-## 一、检测概述
-
-| 项目 | 内容 |
-|------|------|
-| 目标 | {target} |
-| 风险等级 | **{record.get('risk_level', '未知')}** |
-| 开放端口数 | {len(ports)} |
-| 高危端口数 | {len(high_risk_ports)} |
-
-## 二、高危发现
-
-{'| 端口 | 服务 | 风险说明 |' if high_risk_ports else '未发现高危问题'}
-{'|------|------|----------|' if high_risk_ports else ''}
-{chr(10).join([f"| {p['port']} | {p['service']} | 高危端口暴露，存在被攻击风险 |" for p in high_risk_ports]) if high_risk_ports else ''}
-
-## 三、修复建议
-
-{recs_list if recs_list else '无特殊建议'}
-
-## 四、结论
-
-**综合评估: {record.get('risk_level', '未知')}**
-
-{'需要立即处置' if record.get('risk_level') in ['高危', '中危'] else '安全状态良好，建议定期复查'}
-
----
-
-*报告由安全检查 Agent 自动生成*
-"""
-    else:
-        return {"success": False, "data": {}, "error": f"未知模板: {template}，支持 standard / customer"}
-
-    return {
-        "success": True,
-        "data": {
-            "target": target,
-            "template": template,
-            "report": report,
-            "risk_level": record.get('risk_level', 'unknown'),
-            "format": "markdown"
-        },
-        "error": None
-    }
 
 
 def validate_report(target: str) -> dict:
@@ -593,6 +479,17 @@ def validate_report(target: str) -> dict:
     for field in required:
         if not record.get(field):
             checks.append({"check": "完整性", "field": field, "status": "失败", "detail": f"缺少必填字段: {field}"})
+        else:
+            checks.append({"check": "完整性", "field": field, "status": "通过", "detail": f"字段 {field} 存在"})
+
+    # 如果缺少 ports 字段或 ports 为空
+    ports = record.get("ports", [])
+    if not ports:
+        checks.append({"check": "完整性", "field": "ports", "status": "警告", "detail": "端口列表为空，扫描可能未正确执行"})
+    
+    # 缺少修复建议
+    if not record.get("recommendations"):
+        checks.append({"check": "完整性", "field": "recommendations", "status": "警告", "detail": "缺少修复建议"})
 
     # 2. 格式检查
     import re
@@ -911,8 +808,48 @@ def retest_compare(target: str) -> dict:
     }
 
 
+def _load_target_records(target: str) -> list:
+    """获取目标的所有扫描记录，按时间倒序。"""
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT * FROM scan_records WHERE target = ? ORDER BY id DESC",
+        (target,)
+    ).fetchall()
+    conn.close()
+    result = []
+    seen_vendors = set()
+    for r in rows:
+        vendor = r["vendor"] or ""
+        record = json.loads(r["raw_result"])
+        # 相同 vendor 取最新一条
+        dedup_key = vendor if vendor else "__no_vendor"
+        if dedup_key in seen_vendors:
+            continue
+        seen_vendors.add(dedup_key)
+        result.append({
+            "id": r["id"],
+            "time": r["time"],
+            "target": r["target"],
+            "risk_level": r["risk_level"],
+            "vendor": vendor,
+            "record": record,
+        })
+    return result
+
+
+def _risk_level(port: dict) -> str:
+    """判断端口风险等级：高危/中危/低危。"""
+    if port.get("high_risk"):
+        return "高危"
+    rl = port.get("risk_level", "")
+    if rl in ("中危", "中等"):
+        return "中危"
+    return "低危"
+
+
 def gen_report(target: str, template: str = "standard") -> dict:
-    """生成安全检查报告（含4个厂商专用模板）.
+    """生成安全检查报告（数据驱动，章节动态生成）.
 
     Args:
         target: 目标 IP
@@ -921,21 +858,16 @@ def gen_report(target: str, template: str = "standard") -> dict:
     Returns:
         {"success": bool, "data": {...}, "error": str|None}
     """
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    row = conn.execute(
-        "SELECT * FROM scan_records WHERE target = ? ORDER BY id DESC LIMIT 1",
-        (target,)
-    ).fetchone()
-    conn.close()
-
-    if not row:
+    records = _load_target_records(target)
+    if not records:
         return {"success": False, "data": {}, "error": f"未找到 {target} 的扫描记录，请先执行 security_scan"}
 
-    record = json.loads(row["raw_result"])
-    ports = record.get("ports", [])
-    high_risk_ports = record.get("high_risk_ports", [])
-    recs = record.get("recommendations", [])
+    # 最新记录（用于 standard 模板/默认值）
+    latest = records[0]
+    rec = latest["record"]
+    ports = rec.get("ports", [])
+    high_risk_ports = rec.get("high_risk_ports", [])
+    recs = rec.get("recommendations", [])
 
     ports_table = "\n".join([f"| {p['port']} | {p['service']} | {p.get('version','')} | {'⚠️高危' if p.get('high_risk') else 'open'} |" for p in ports])
     recs_list = "\n".join([f"{i+1}. {r}" for i, r in enumerate(recs)])
@@ -945,9 +877,9 @@ def gen_report(target: str, template: str = "standard") -> dict:
 
 ## 基本信息
 - **目标**: {target}
-- **检查时间**: {record.get('scan_time', '未知')}
-- **风险等级**: **{record.get('risk_level', '未知')}**
-- **检测厂商**: {record.get('vendor', 'N/A')}
+- **检查时间**: {rec.get('scan_time', '未知')}
+- **风险等级**: **{rec.get('risk_level', '未知')}**
+- **检测厂商**: {latest['vendor'] or 'N/A'}
 
 ## 端口开放情况
 | 端口 | 服务 | 版本 | 状态 |
@@ -955,46 +887,263 @@ def gen_report(target: str, template: str = "standard") -> dict:
 {ports_table if ports_table else '| (无) | — | — | — |'}
 
 ## 风险分析
-{record.get('summary', '无数据')}
+{rec.get('summary', '无数据')}
 
 ## 修复建议
 {recs_list if recs_list else '无特殊建议'}
 
 ---
-*报告由安全检查 Agent 自动生成 — {record.get('scan_time', '')}*
+*报告由安全检查 Agent 自动生成 — {rec.get('scan_time', '')}*
 """
+
     elif template == "customer":
+        # ═══════════════════════════════════════════
+        #  数据驱动多源汇总报告
+        # ═══════════════════════════════════════════
+
+        now = datetime.now()
+        report_id = f"SEC-CHK-{now.strftime('%Y%m%d')}-001"
+        scan_time_str = rec.get('scan_time', now.strftime('%Y-%m-%d %H:%M'))
+
+        # ── 1. 从所有记录中聚合数据 ──
+        all_vendors = []         # 去重后的 vendor 列表
+        all_ports = []           # 所有端口（去重）
+        all_recs = []            # 所有修复建议（去重）
+        seen_port_keys = set()
+        seen_rec_texts = set()
+
+        for entry in records:
+            r = entry["record"]
+            v = entry["vendor"]
+            if v and v not in all_vendors:
+                all_vendors.append(v)
+
+            for p in r.get("ports", []):
+                pk = f"{p['port']}-{p.get('service','?')}"
+                if pk not in seen_port_keys:
+                    seen_port_keys.add(pk)
+                    p_entry = dict(p)
+                    # 标注发现来源
+                    p_entry["_source_vendor"] = entry["vendor"]
+                    all_ports.append(p_entry)
+
+            for r_text in r.get("recommendations", []):
+                if r_text not in seen_rec_texts:
+                    seen_rec_texts.add(r_text)
+                    all_recs.append(r_text)
+
+        # ── 2. 按真实风险等级分类 ──
+        high_ports = [p for p in all_ports if _risk_level(p) == "高危"]
+        med_ports  = [p for p in all_ports if _risk_level(p) == "中危"]
+        low_ports  = [p for p in all_ports if _risk_level(p) == "低危"]
+
+        # ── 3. 修复建议按关键词分级（从所有记录的 recs 聚合）──
+        def _rec_priority(text: str) -> str:
+            t = text.lower()
+            if any(k in t for k in ["紧急", "立即", "高危", "严重", "p0"]):
+                return "P0"
+            if any(k in t for k in ["限期", "7天", "p1", "中危"]):
+                return "P1"
+            if any(k in t for k in ["30天", "p2", "常规"]):
+                return "P2"
+            return "P3"
+
+        p0_recs = [r for r in all_recs if _rec_priority(r) == "P0"]
+        p1_recs = [r for r in all_recs if _rec_priority(r) == "P1"]
+        p2_recs = [r for r in all_recs if _rec_priority(r) == "P2"]
+        p3_recs = [r for r in all_recs if _rec_priority(r) == "P3"]
+
+        total_findings = len(high_ports) + len(med_ports) + len(low_ports)
+
+        # ═══════════════ 动态生成章节 ═══════════════
+
+        sections = []
+
+        # 一、检测概述
+        overview = f"""## 一、检测概述
+
+### 1.1 检测范围
+
+| 目标 | IP范围 | 检测方式 |
+|------|--------|----------|
+| {target} | {target} | 远程扫描 |
+
+### 1.2 参与检测的厂商/工具
+"""
+        if all_vendors:
+            overview += "\n| 厂商 | 扫描次数 | 最近检测时间 |\n|------|:--------:|--------------|\n"
+            for entry in records:
+                if entry['vendor']:
+                    overview += f"| {entry['vendor']} | — | {entry['time']} |\n"
+        else:
+            overview += "\n（本机快速扫描，未使用第三方厂商工具）\n"
+
+        overview += f"""
+### 1.3 检测结果汇总
+
+| 风险等级 | 数量 |
+|:--------:|:----:|
+| **高危/严重** | {len(high_ports)} |
+| **中危** | {len(med_ports)} |
+| **低危/信息** | {len(low_ports)} |
+| **总计** | {total_findings} |
+"""
+        sections.append(overview)
+
+        # 二、高危漏洞清单（有数据才出）
+        if high_ports:
+            high_rows = ""
+            for i, p in enumerate(high_ports, 1):
+                src = p.get("_source_vendor", "") or "自检"
+                high_rows += f"| **VUL-H-{i:03d}** | {target} | {p['port']} | {p.get('service','?')} 高危端口暴露 | {src} | — | — |\n"
+            sections.append(f"""## 二、高危漏洞清单
+
+### 2.1 高危端口暴露
+
+| 编号 | 目标IP | 端口 | 漏洞名称 | 发现来源 | CVE编号 | 状态 |
+|:----:|--------|:----:|----------|:--------:|:--------:|:----:|
+{high_rows}""")
+        else:
+            sections.append("""## 二、高危漏洞清单
+
+未发现高危漏洞。\n""")
+
+        # 三、中危漏洞清单（有数据才出）
+        if med_ports:
+            med_rows = ""
+            for i, p in enumerate(med_ports, 1):
+                src = p.get("_source_vendor", "") or "自检"
+                med_rows += f"| VUL-M-{i:03d} | {target} | {p['port']}/{p.get('service','?')} | 端口暴露风险 | {src} |\n"
+            sections.append(f"""## 三、中危漏洞清单
+
+| 编号 | 目标IP | 端口/服务 | 漏洞描述 | 发现来源 |
+|:----:|--------|:---------:|----------|:--------:|
+{med_rows}""")
+        else:
+            sections.append("""## 三、中危漏洞清单
+
+未发现中危漏洞。\n""")
+
+        # 四、低危/信息类发现（有数据才出）
+        if low_ports:
+            low_rows = ""
+            for i, p in enumerate(low_ports, 1):
+                src = p.get("_source_vendor", "") or "自检"
+                low_rows += f"| {i} | 1 | 端口{p['port']}/{p.get('service','?')} 开放（信息级） | {target} | {src} |\n"
+            sections.append(f"""## 四、低危/信息类发现
+
+| 序号 | 数量 | 主要类型 | 涉及目标 | 发现来源 |
+|:----:|:----:|----------|:--------:|:--------:|
+{low_rows}""")
+        else:
+            sections.append("""## 四、低危/信息类发现
+
+未发现低风险项。\n""")
+
+        # 五、综合整改建议
+        rec_section = "## 五、综合整改建议\n\n"
+        if p0_recs:
+            rec_section += "### 5.1 紧急整改——24小时内（P0）\n\n| 优先级 | 整改项 | 涉及目标 | 整改期限 |\n|:------:|--------|:--------:|----------|\n"
+            rec_section += "\n".join([f"| **P0** | {r} | {target} | 立即修复 |" for r in p0_recs]) + "\n\n"
+        if p1_recs:
+            rec_section += "### 5.2 限期整改——7天内（P1）\n\n| 优先级 | 整改项 | 涉及目标 | 整改期限 |\n|:------:|--------|:--------:|----------|\n"
+            rec_section += "\n".join([f"| **P1** | {r} | {target} | 7天内整改 |" for r in p1_recs]) + "\n\n"
+        if p2_recs or p3_recs:
+            rec_section += "### 5.3 常规整改——30天内（P2/P3）\n\n| 序号 | 整改项 | 涉及范围 | 整改期限 |\n|:----:|--------|----------|:--------:|\n"
+            for i, r in enumerate(p2_recs + p3_recs, 1):
+                deadline = "30天内" if i <= len(p2_recs) else "下次维护周期"
+                rec_section += f"| {i} | {r} | {target} | {deadline} |\n"
+        if not any([p0_recs, p1_recs, p2_recs, p3_recs]):
+            rec_section += "无特殊整改建议。\n"
+        sections.append(rec_section)
+
+        # 六、攻击路径复盘（有高危端口才出）
+        if high_ports:
+            port_list_str = "、".join([str(p["port"]) for p in high_ports[:5]])
+            attack_path = f"""## 六、攻击路径复盘
+
+### 攻击面分析
+
+根据检测结果，{target} 存在 {len(high_ports)} 个高危端口（{port_list_str} 等）：
+
+```
+外部攻击者
+    ↓ 信息收集（端口扫描发现开放端口）
+{target}
+    ↓ 高危端口暴露：{port_list_str}
+    ↓ 可利用服务：{', '.join([p.get('service','?') for p in high_ports[:5]])}
+    ↓ 若存在未修复漏洞，可尝试远程利用
+内部网络失陷
+```
+
+**影响评估：** 高危端口暴露可能被攻击者利用进行渗透，需立即处置。
+"""
+            sections.append(attack_path)
+        else:
+            sections.append("""## 六、攻击路径复盘
+
+未发现高危端口，攻击面较小。\n""")
+
+        # 七、结论
+        risk_str = rec.get("risk_level", "未知")
+        conclusions = f"""## 七、结论
+
+### 综合风险评级：**{risk_str}**
+
+对 {target} 经扫描检测，共发现 **{total_findings} 项安全风险**。
+
+**核心结论：**
+1. {"发现 " + str(len(high_ports)) + " 个高危风险，建议立即排查" if high_ports else "未发现高危风险" }
+2. {"发现 " + str(len(med_ports)) + " 个中危项，需限期整改" if med_ports else "未发现中危风险" }
+3. {"发现 " + str(len(low_ports)) + " 个低风险项，建议持续关注" if low_ports else "未发现低风险项" }
+"""
+        sections.append(conclusions)
+
+        # 八、附件（仅当一个 vendor 有记录时才出，从 VENDOR_SELECTION_STRATEGY 找对应产品名）
+        attachment_section = "## 八、附件\n\n"
+        if all_vendors:
+            # 构建 vendor->检测类型映射
+            vendor_map = {}
+            for cat, info in VENDOR_SELECTION_STRATEGY.items():
+                for v in info["vendors"]:
+                    if v not in vendor_map:
+                        vendor_map[v] = info["description"]
+            attachment_rows = ""
+            for i, entry in enumerate(records, 1):
+                v = entry["vendor"]
+                if not v:
+                    continue
+                detect_type = vendor_map.get(v, "安全检测")
+                attachment_rows += f"| {i} | {v}{detect_type}检测原始记录 | {v} |\n"
+            if attachment_rows:
+                attachment_section += "| 序号 | 附件名称 | 来源 |\n|:----:|----------|:----:|\n" + attachment_rows
+            else:
+                attachment_section += "（无独立附件）\n"
+        else:
+            attachment_section += "（无独立附件）\n"
+        sections.append(attachment_section)
+
+        # ── 组合最终报告 ──
         report = f"""# 网络安全检查汇总报告
 
-**报告编号**: SEC-CHK-{datetime.now().strftime('%Y%m%d')}-001
+**报告编号**: {report_id}
 **检查目标**: {target}
-**检查时间**: {record.get('scan_time', '未知')}
-
-> 声明：本报告基于安全检测工具的原始输出汇总编制。
-
-## 一、检测概述
-| 项目 | 内容 |
-|------|------|
-| 目标 | {target} |
-| 风险等级 | **{record.get('risk_level', '未知')}** |
-| 开放端口数 | {len(ports)} |
-| 高危端口数 | {len(high_risk_ports)} |
-
-## 二、高危发现
-{'| 端口 | 服务 | 版本 | 风险说明 |' if high_risk_ports else '未发现高危问题'}
-{'|------|------|------|----------|' if high_risk_ports else ''}
-{chr(10).join([f"| {p['port']} | {p['service']} | {p.get('version','')} | 高危端口暴露，存在被攻击风险 |" for p in high_risk_ports]) if high_risk_ports else ''}
-
-## 三、修复建议
-{recs_list if recs_list else '无特殊建议'}
-
-## 四、结论
-**综合评估: {record.get('risk_level', '未知')}**
-{'需要立即处置' if record.get('risk_level') in ['高危', '中危'] else '安全状态良好，建议定期复查'}
+**检查时间**: {scan_time_str}
+**报告日期**: {now.strftime('%Y年%m月%d日')}
 
 ---
-*报告由安全检查 Agent 自动生成*
+
+> **声明：** 本报告基于安全检测工具的原始输出汇总编制。每项发现均已标注检测来源，便于追溯验证。
+
+---
+
+""" + "\n---\n\n".join(sections) + f"""
+
+---
+
+*报告由安全检查 Agent 自动生成 — {scan_time_str}*
 """
+
     elif template == "anheng-report":
         report = f"""# 安恒明鉴漏洞扫描报告
 
@@ -1103,7 +1252,7 @@ def gen_report(target: str, template: str = "standard") -> dict:
             "target": target,
             "template": template,
             "report": report,
-            "risk_level": record.get('risk_level', 'unknown'),
+            "risk_level": rec.get('risk_level', 'unknown'),
             "format": "markdown"
         },
         "error": None

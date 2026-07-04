@@ -97,6 +97,9 @@ def _static_tool_list() -> list[dict]:
         {"name": "validate_report", "description": "报告质量校验 — 检查报告数据的完整性/格式/数值合理性", "toolset": "security", "requires_env": [], "parameters": [{"name": "target", "type": "string", "description": "目标IP", "required": True}]},
         {"name": "gen_selection_plan", "description": "生成厂商选型方案 — 按检测类型推荐最优安全厂商工具，覆盖7类检测30+厂商", "toolset": "security", "requires_env": [], "parameters": [{"name": "target_desc", "type": "string", "description": "目标描述", "required": False}, {"name": "exclude_types", "type": "string", "description": "排除的检测类型", "required": False}]},
         {"name": "get_asset_profile", "description": "查询资产档案 — 查看目标IP的历史扫描记录和风险变化趋势", "toolset": "security", "requires_env": [], "parameters": [{"name": "target", "type": "string", "description": "目标IP", "required": True}]},
+        {"name": "baseline_check", "description": "等保基线核查 — 检查目标是否符合等保2.0三级要求（6类基线项）", "toolset": "security", "requires_env": [], "parameters": [{"name": "target", "type": "string", "description": "目标IP", "required": True}]},
+        {"name": "evidence_snapshot", "description": "证据固化 — 为扫描结果生成SHA256 Hash+时间戳的证据记录", "toolset": "security", "requires_env": [], "parameters": [{"name": "target", "type": "string", "description": "目标IP", "required": True}, {"name": "scan_id", "type": "string", "description": "记录ID", "required": False}]},
+        {"name": "retest_compare", "description": "复测确认 — 对比最近两次扫描记录的端口变化和风险变化", "toolset": "security", "requires_env": [], "parameters": [{"name": "target", "type": "string", "description": "目标IP", "required": True}]},
     ]
 
 

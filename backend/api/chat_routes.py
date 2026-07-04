@@ -376,7 +376,7 @@ ALL_TOOLS: list[dict] = BROWSER_TOOLS + [
                 "type": "object",
                 "properties": {
                     "target": {"type": "string", "description": "目标IP地址"},
-                    "template": {"type": "string", "description": "报告模板: standard（标准）/ customer（客户汇总模板）/ security-audit（安全检查汇总报告-完整版）/ vendor-report（厂商检测报告）"},
+                    "template": {"type": "string", "description": "报告模板: standard（标准）/ customer（客户汇总）/ anheng-report（安恒明鉴）/ nsfocus-report（绿盟）/ chaitin-report（长亭牧云）/ vackbot-report（墨云VackBot）"},
                 },
                 "required": ["target"],
             },
@@ -421,6 +421,58 @@ ALL_TOOLS: list[dict] = BROWSER_TOOLS + [
             "description": "查询资产档案 — 查看指定IP的历史扫描记录、风险变化趋势、上次使用的工具和风险等级。",
             "vendor": "EvoGen",
             "purpose": "资产管理 / 历史追溯",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "目标IP地址"},
+                },
+                "required": ["target"],
+            },
+        },
+    },
+    # ── 等保基线核查 ──
+    {
+        "type": "function",
+        "function": {
+            "name": "baseline_check",
+            "description": "等保基线核查 — 检查指定IP是否符合等保2.0三级要求，覆盖边界防护/访问控制/身份鉴别/日志审计/漏洞管理/最小权限6类基线项。",
+            "vendor": "EvoGen",
+            "purpose": "安全检测 / 等保基线核查",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "目标IP地址"},
+                },
+                "required": ["target"],
+            },
+        },
+    },
+    # ── 证据固化 ──
+    {
+        "type": "function",
+        "function": {
+            "name": "evidence_snapshot",
+            "description": "证据固化 — 为指定IP的最新扫描结果生成SHA256哈希+时间戳的证据记录，确保检测结果的司法可追溯性。",
+            "vendor": "EvoGen",
+            "purpose": "安全检测 / 证据固化",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "目标IP地址"},
+                    "scan_id": {"type": "string", "description": "指定扫描记录ID（可选，默认最新）"},
+                },
+                "required": ["target"],
+            },
+        },
+    },
+    # ── 复测确认 ──
+    {
+        "type": "function",
+        "function": {
+            "name": "retest_compare",
+            "description": "复测确认 — 对比指定IP最近两次扫描记录，标注新增/关闭端口和风险等级变化，确保复测逻辑一致性。",
+            "vendor": "EvoGen",
+            "purpose": "安全检测 / 复测对比",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1858,8 +1910,11 @@ async def _execute_tool(tool_name: str, arguments: dict, session_id: str, user_i
 
         # ── 安全检测工具（mcp_security.py）──
         elif tool_name in ("ping_sweep", "security_scan", "batch_scan", "gen_security_report",
-                           "validate_report", "gen_selection_plan", "get_asset_profile"):
-            result = _run_mcp_tool("scripts/mcp_security.py", tool_name, arguments)
+                           "validate_report", "gen_selection_plan", "get_asset_profile",
+                           "baseline_check", "evidence_snapshot", "retest_compare"):
+            # 注意: gen_report 在 gen_security_report 的路上, gen_security_report 映射到 gen_report
+            mcp_name = "gen_report" if tool_name == "gen_security_report" else tool_name
+            result = _run_mcp_tool("scripts/mcp_security.py", mcp_name, arguments)
             return result
 
         # ── 报告生成 ──

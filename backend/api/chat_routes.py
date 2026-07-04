@@ -308,6 +308,128 @@ ALL_TOOLS: list[dict] = BROWSER_TOOLS + [
             },
         },
     },
+    # ── 安全检查工具（mcp_security.py）──
+    {
+        "type": "function",
+        "function": {
+            "name": "ping_sweep",
+            "description": "ICMP存活探测 — 扫描目标网段，发现存活主机IP列表。用于检测前的资产摸底阶段。",
+            "vendor": "EvoGen",
+            "purpose": "资产探测 / 存活主机发现",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "subnet": {"type": "string", "description": "目标网段，如 192.168.1.0/24"},
+                },
+                "required": ["subnet"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "security_scan",
+            "description": "安全检查 — 对单个IP执行端口扫描+风险分析，检查常见高危端口并输出风险等级和修复建议。",
+            "vendor": "EvoGen",
+            "purpose": "安全检测 / 端口扫描+风险分析",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "目标IP地址"},
+                    "vendor": {"type": "string", "description": "厂商名称（可选，如: 绿盟、天融信、长亭科技）"},
+                    "scan_type": {"type": "string", "description": "扫描类型: port_scan（默认）/ full"},
+                },
+                "required": ["target"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "batch_scan",
+            "description": "批量安全扫描 — 对多个目标批量执行安全检查，自动汇总结果和风险统计数据。",
+            "vendor": "EvoGen",
+            "purpose": "批量检测 / 多目标安全扫描",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "targets": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "目标IP地址列表，如 [\"192.168.1.1\", \"192.168.1.2\"]",
+                    },
+                    "scan_type": {"type": "string", "description": "扫描类型: port_scan（默认）/ full"},
+                    "vendor": {"type": "string", "description": "厂商名称（可选）"},
+                },
+                "required": ["targets"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "gen_security_report",
+            "description": "生成安全检查报告 — 按模板生成Markdown格式的结构化安全检测报告（含端口清单、风险等级、修复建议）。",
+            "vendor": "EvoGen",
+            "purpose": "报告生成 / 安全检测报告",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "目标IP地址"},
+                    "template": {"type": "string", "description": "报告模板: standard（标准）/ customer（客户汇总模板）"},
+                },
+                "required": ["target"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "validate_report",
+            "description": "报告质量校验 — 检查安全报告数据的完整性（必填字段）、格式规范性（IP/日期/风险等级）、数值合理性（端口号）。",
+            "vendor": "EvoGen",
+            "purpose": "质量保障 / 报告数据校验",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "目标IP地址"},
+                },
+                "required": ["target"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "gen_selection_plan",
+            "description": "生成厂商选型方案 — 按检测类型推荐最优安全厂商工具。支持7类检测覆盖30+安全厂商的推荐策略。",
+            "vendor": "EvoGen",
+            "purpose": "智能选型 / 工具推荐",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target_desc": {"type": "string", "description": "目标描述（可选，如: 互联网企业Web服务器）"},
+                    "exclude_types": {"type": "string", "description": "排除的检测类型（可选，逗号分隔）"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_asset_profile",
+            "description": "查询资产档案 — 查看指定IP的历史扫描记录、风险变化趋势、上次使用的工具和风险等级。",
+            "vendor": "EvoGen",
+            "purpose": "资产管理 / 历史追溯",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "目标IP地址"},
+                },
+                "required": ["target"],
+            },
+        },
+    },
 ]
 # ── 自定义工具动态合并 ──
 
@@ -1279,6 +1401,76 @@ def _run_mcp_tool(script_path: str, method: str, arguments: dict) -> str:
             if data.get("warnings"):
                 lines.append(f"警告: {data['warnings'][:200]}")
 
+        # ── 安全检测工具通用格式化 ──
+        elif method == "ping_sweep":
+            lines.append(f"子网: {arguments.get('subnet', '未知')}")
+            alive = data.get("alive_hosts", [])
+            lines.append(f"存活主机: {len(alive)} 台")
+            for h in alive:
+                hostname = f" ({h.get('hostname')})" if h.get("hostname") else ""
+                lines.append(f"  · {h['ip']}{hostname}")
+
+        elif method == "security_scan":
+            lines.append(f"目标: {data.get('target', '未知')}")
+            lines.append(f"风险等级: **{data.get('risk_level', '未知')}**")
+            ports = data.get("ports", [])
+            high_ports = data.get("high_risk_ports", [])
+            lines.append(f"开放端口: {len(ports)} 个")
+            for p in ports:
+                flag = " ⚠️高危" if p.get("high_risk") else ""
+                lines.append(f"  · {p['port']}/{p['service']}{flag}")
+            if high_ports:
+                lines.append(f"高危端口数: {len(high_ports)}")
+            recs = data.get("recommendations", [])
+            if recs:
+                lines.append("修复建议:")
+                for r in recs:
+                    lines.append(f"  · {r}")
+            if data.get("summary"):
+                lines.append(f"摘要: {data['summary']}")
+
+        elif method == "batch_scan":
+            targets = data.get("targets", [])
+            summary = data.get("summary", {})
+            lines.append(f"扫描目标: {len(targets)} 个")
+            for t in targets:
+                lines.append(f"  · {t['target']} → {t.get('risk_level', '未知')} ({t.get('port_count', 0)} 端口)")
+            lines.append(f"统计: 高危{summary.get('high_risk', 0)} / 中危{summary.get('medium_risk', 0)} / 低危{summary.get('low_risk', 0)}")
+
+        elif method == "gen_security_report":
+            lines.append(f"目标: {data.get('target', '未知')}")
+            lines.append(f"模板: {data.get('template', 'standard')}")
+            lines.append(f"风险等级: {data.get('risk_level', '未知')}")
+            lines.append("报告内容:")
+            report = data.get("report", "")
+            # 只取前20行避免太长
+            report_lines = report.strip().split("\n")[:20]
+            for rl in report_lines:
+                lines.append(f"  {rl}")
+            if len(report.strip().split("\n")) > 20:
+                lines.append("  ... (报告较长，请查看完整内容)")
+
+        elif method == "validate_report":
+            lines.append(f"目标: {data.get('target', '未知')}")
+            lines.append(f"总体评价: {data.get('quality', '未知')}")
+            checks = data.get("checks", [])
+            for c in checks:
+                status_icon = "✅" if c.get("status") != "失败" else "❌"
+                lines.append(f"  {status_icon} [{c.get('check')}] {c.get('field')}: {c.get('detail', '')}")
+
+        elif method == "gen_selection_plan":
+            plan = data.get("plan", [])
+            lines.append(f"检测类型数: {len(plan)}")
+            for item in plan:
+                vendors = ", ".join(item.get("recommended_vendors", []))
+                lines.append(f"  · {item.get('check_type_name', '')}: {vendors}")
+
+        elif method == "get_asset_profile":
+            lines.append(f"资产: {data.get('asset_ip', '未知')}")
+            lines.append(f"扫描次数: {data.get('scan_count', 0)}")
+            lines.append(f"最近扫描: {data.get('last_scan', '无')}")
+            lines.append(f"最近风险: {data.get('last_risk', '未知')}")
+
         return "\n".join(lines)
 
     except json.JSONDecodeError:
@@ -1663,6 +1855,12 @@ async def _execute_tool(tool_name: str, arguments: dict, session_id: str, user_i
                 return "⚠️ ClamAV (clamscan) 未安装，请先 apt install clamav"
             except Exception as e:
                 return f"❌ ClamAV 扫描失败: {str(e)[:200]}"
+
+        # ── 安全检测工具（mcp_security.py）──
+        elif tool_name in ("ping_sweep", "security_scan", "batch_scan", "gen_security_report",
+                           "validate_report", "gen_selection_plan", "get_asset_profile"):
+            result = _run_mcp_tool("scripts/mcp_security.py", tool_name, arguments)
+            return result
 
         # ── 报告生成 ──
         elif tool_name == "generate_report":

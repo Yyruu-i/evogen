@@ -3140,7 +3140,7 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
         "步骤2 → `security_scan(target, vendor=\"绿盟,天融信,安恒\")` — TOP500端口+服务识别+风险分级\\n"
         "步骤3 → `baseline_check(target)` — 等保基线核查\\n"
         "步骤4 → `evidence_snapshot(target)` — 证据固化\\n"
-        "步骤5 → `gen_security_report(target, template=\"standard\")` — 自动选模板出报告\\n"
+        "步骤5 → `gen_security_report(target, template=\"customer\")` — 数据驱动多源汇总报告\\n"
         "\\n"
         "**局部检测**（用户指定了具体检测类型，如'只扫端口'、'做等保'）：\\n"
         "- 只扫端口 → `security_scan(target)`（不用 baseline 和 evidence）\\n"

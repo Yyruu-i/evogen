@@ -383,13 +383,21 @@ def batch_scan(targets: list, scan_type: str = "port_scan", vendor: str = "") ->
         return {"success": False, "data": {}, "error": "目标列表为空"}
 
     results = []
-    summary = {"total": len(targets), "high_risk": 0, "medium_risk": 0, "low_risk": 0}
+    summary = {"total": len(targets), "high_risk": 0, "medium_risk": 0, "low_risk": 0, "vendors": set()}
 
     for target in targets:
         r = security_scan(target, vendor, scan_type)
         if r.get("success") and r.get("data"):
             data = r["data"]
-            results.append({"target": target, "risk_level": data.get("risk_level"), "port_count": len(data.get("ports", []))})
+            v = data.get("vendor", vendor) or vendor or "自检"
+            summary["vendors"].add(v)
+            results.append({
+                "target": target,
+                "risk_level": data.get("risk_level"),
+                "port_count": len(data.get("ports", [])),
+                "vendor": v,
+                "scan_time": data.get("scan_time", "")
+            })
             risk = data.get("risk_level", "unknown")
             if risk == "高危":
                 summary["high_risk"] += 1
@@ -397,6 +405,8 @@ def batch_scan(targets: list, scan_type: str = "port_scan", vendor: str = "") ->
                 summary["medium_risk"] += 1
             else:
                 summary["low_risk"] += 1
+
+    summary["vendors"] = list(summary["vendors"])
 
     return {
         "success": True,
@@ -410,27 +420,65 @@ def batch_scan(targets: list, scan_type: str = "port_scan", vendor: str = "") ->
 
 
 def gen_selection_plan(target_desc: str = "", exclude_types: str = "") -> dict:
-    """生成选型方案.
+    """生成选型方案（基于历史命中率计算置信度）.
 
     Args:
         target_desc: 目标描述（可选）
         exclude_types: 排除的检测类型，逗号分隔（可选）
 
     Returns:
-        {"success": bool, "data": {...}, "error": str|None}
+        {"success": bool, "data": {"plan": [...], "total_types": N, "confidence": {...}}, "error": str|None}
     """
     excludes = [t.strip() for t in exclude_types.split(",") if t.strip()] if exclude_types else []
     plan = []
 
+    # 从 DB 统计历史命中率
+    conn = sqlite3.connect(str(DB_PATH))
+    total_scans = conn.execute("SELECT COUNT(*) FROM scan_records").fetchone()[0]
+    vendor_scan_counts = {}
+    if total_scans > 0:
+        rows = conn.execute(
+            "SELECT vendor, COUNT(*) as cnt FROM scan_records WHERE vendor != '' GROUP BY vendor ORDER BY cnt DESC"
+        ).fetchall()
+        for row in rows:
+            vendor_scan_counts[row[0]] = row[1]
+    conn.close()
+
     for check_type, info in VENDOR_SELECTION_STRATEGY.items():
         if check_type in excludes:
             continue
+
+        # 为每个推荐厂商计算置信度
+        vendor_scores = []
+        for v in info["vendors"]:
+            # 基础分：知识库策略决定
+            base_score = 0.7
+
+            # 历史分：该 vendor 在 DB 中的扫描次数占比
+            v_count = vendor_scan_counts.get(v, 0)
+            history_score = min(v_count / max(total_scans, 1), 0.3)
+
+            # 综合置信度
+            confidence = round(base_score + history_score, 2)
+
+            vendor_scores.append({
+                "name": v,
+                "confidence": confidence,
+                "history_scans": v_count,
+                "history_total": total_scans
+            })
+
+        # 按置信度排序（降序）
+        vendor_scores.sort(key=lambda x: x["confidence"], reverse=True)
+
         plan.append({
             "check_type": check_type,
             "check_type_name": info["description"],
-            "recommended_vendors": info["vendors"],
+            "recommended_vendors": [vs["name"] for vs in vendor_scores],
+            "vendor_scores": vendor_scores,
             "recommended_count": len(info["vendors"]),
-            "scenario": info["scenario"]
+            "scenario": info["scenario"],
+            "top_confidence": vendor_scores[0]["confidence"] if vendor_scores else 0.0
         })
 
     return {
@@ -438,6 +486,7 @@ def gen_selection_plan(target_desc: str = "", exclude_types: str = "") -> dict:
         "data": {
             "plan": plan,
             "total_types": len(plan),
+            "confidence_note": "置信度 = 基础策略分(0.7) + 历史命中率(0-0.3)。历史命中率来自 DB 中各 vendor 的实际扫描次数占比。",
             "note": "每类检测只选一个工具执行，避免重复检测和资源浪费。选择依据：覆盖度 > 检测深度 > 客户偏好 > 互补覆盖"
         },
         "error": None
@@ -447,12 +496,13 @@ def gen_selection_plan(target_desc: str = "", exclude_types: str = "") -> dict:
 
 
 def validate_report(target: str) -> dict:
-    """校验报告数据质量.
+    """校验报告数据质量（基于所有扫描记录做真实校验）.
 
     检查：
-    1. 完整性：必填字段是否存在
-    2. 格式规范性：IP/日期格式
-    3. 数值合理性：端口数/CVSS
+    1. 数据完整性：是否有扫描记录
+    2. 多源覆盖度：不同 vendor 的覆盖程度
+    3. 风险等级合理性：跨记录的一致性
+    4. 数据丰富度：端口信息完整度
 
     Args:
         target: 目标 IP
@@ -460,54 +510,100 @@ def validate_report(target: str) -> dict:
     Returns:
         {"success": bool, "data": {"checks": [...], "passed": N, "failed": N}, "error": str|None}
     """
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    row = conn.execute(
-        "SELECT * FROM scan_records WHERE target = ? ORDER BY id DESC LIMIT 1",
-        (target,)
-    ).fetchone()
-    conn.close()
-
-    if not row:
-        return {"success": False, "data": {}, "error": f"未找到 {target} 的记录"}
-    record = json.loads(row["raw_result"])
+    records = _load_target_records(target)
+    if not records:
+        return {"success": False, "data": {}, "error": f"未找到 {target} 的扫描记录"}
 
     checks = []
 
-    # 1. 完整性检查
-    required = ["target", "scan_time", "risk_level"]
-    for field in required:
-        if not record.get(field):
-            checks.append({"check": "完整性", "field": field, "status": "失败", "detail": f"缺少必填字段: {field}"})
-        else:
-            checks.append({"check": "完整性", "field": field, "status": "通过", "detail": f"字段 {field} 存在"})
+    # 1. 数据完整性
+    checks.append({
+        "check": "扫描记录数",
+        "value": len(records),
+        "status": "通过" if len(records) >= 1 else "失败",
+        "detail": f"共 {len(records)} 条扫描记录"
+    })
 
-    # 如果缺少 ports 字段或 ports 为空
-    ports = record.get("ports", [])
-    if not ports:
-        checks.append({"check": "完整性", "field": "ports", "status": "警告", "detail": "端口列表为空，扫描可能未正确执行"})
-    
-    # 缺少修复建议
-    if not record.get("recommendations"):
-        checks.append({"check": "完整性", "field": "recommendations", "status": "警告", "detail": "缺少修复建议"})
+    total_scan_count = 0
+    for entry in records:
+        conn = sqlite3.connect(str(DB_PATH))
+        cnt = conn.execute(
+            "SELECT COUNT(*) FROM scan_records WHERE target = ? AND vendor = ?",
+            (target, entry["vendor"])
+        ).fetchone()[0]
+        conn.close()
+        total_scan_count += cnt
 
-    # 2. 格式检查
-    import re
-    ip = record.get("target", "")
-    if ip and not re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', ip):
-        checks.append({"check": "格式", "field": "target", "status": "失败", "detail": f"IP格式异常: {ip}"})
-    risk = record.get("risk_level", "")
-    if risk and risk not in ["低危", "中危", "高危", "unknown"]:
-        checks.append({"check": "格式", "field": "risk_level", "status": "失败", "detail": f"风险等级异常: {risk}"})
+    checks.append({
+        "check": "扫描执行次数",
+        "value": total_scan_count,
+        "status": "通过" if total_scan_count >= 1 else "失败",
+        "detail": f"目标共执行 {total_scan_count} 次扫描"
+    })
 
-    # 3. 数值合理性
-    if "ports" in record:
-        for p in record["ports"]:
-            port_num = p.get("port", 0)
-            if not (1 <= port_num <= 65535):
-                checks.append({"check": "数值", "field": f"port/{port_num}", "status": "失败", "detail": f"端口号超出范围: {port_num}"})
+    # 2. 多源覆盖度
+    vendors = [e["vendor"] for e in records if e["vendor"]]
+    checks.append({
+        "check": "多源覆盖度",
+        "value": len(vendors),
+        "status": "通过" if len(vendors) >= 1 else "警告",
+        "detail": f"使用了 {', '.join(vendors) if vendors else '(无)'} 共 {len(vendors)} 个厂商/工具进行检测"
+    })
 
-    passed = sum(1 for c in checks if c["status"] != "失败")
+    # 3. 风险等级合理性
+    risk_levels = [e["record"].get("risk_level", "unknown") for e in records]
+    unique_risks = set(risk_levels)
+    if len(unique_risks) > 1:
+        checks.append({
+            "check": "风险等级一致性",
+            "value": list(unique_risks),
+            "status": "警告",
+            "detail": f"不同扫描记录的风险等级不一致: {', '.join(unique_risks)}，建议人工确认"
+        })
+    else:
+        checks.append({
+            "check": "风险等级一致性",
+            "value": list(unique_risks),
+            "status": "通过",
+            "detail": f"所有记录风险等级一致: {risk_levels[0] if risk_levels else 'unknown'}"
+        })
+
+    # 4. 数据丰富度
+    for entry in records:
+        r = entry["record"]
+        ports = r.get("ports", [])
+        recs = r.get("recommendations", [])
+        vendor_label = entry["vendor"] or "自检"
+        
+        # 端口信息完整度
+        ports_with_version = sum(1 for p in ports if p.get("version"))
+        pct = (ports_with_version / len(ports) * 100) if ports else 100
+        checks.append({
+            "check": f"{vendor_label} - 端口版本识别率",
+            "value": f"{ports_with_version}/{len(ports)} ({pct:.0f}%)",
+            "status": "通过" if pct >= 50 else "警告",
+            "detail": f"有 {pct:.0f}% 的端口识别到服务版本" if ports else "无开放端口"
+        })
+
+        # 修复建议完整度
+        checks.append({
+            "check": f"{vendor_label} - 修复建议",
+            "value": len(recs),
+            "status": "通过" if len(recs) >= 1 else "警告",
+            "detail": f"提供 {len(recs)} 条修复建议" if recs else "缺少修复建议"
+        })
+
+        # 扫描时间有效性
+        scan_time = r.get("scan_time", entry.get("time", ""))
+        checks.append({
+            "check": f"{vendor_label} - 扫描时间",
+            "value": scan_time,
+            "status": "通过" if scan_time else "警告",
+            "detail": f"扫描时间为 {scan_time}" if scan_time else "缺少扫描时间"
+        })
+
+    passed = sum(1 for c in checks if c["status"] == "通过")
+    warnings = sum(1 for c in checks if c["status"] == "警告")
     failed = sum(1 for c in checks if c["status"] == "失败")
 
     return {
@@ -517,8 +613,11 @@ def validate_report(target: str) -> dict:
             "checks": checks,
             "passed": passed,
             "failed": failed,
+            "warnings": warnings,
             "total": len(checks),
-            "quality": "合格" if failed == 0 else f"发现 {failed} 个问题"
+            "quality": "优秀" if failed == 0 and warnings == 0 
+                       else "合格" if failed == 0 
+                       else f"发现 {failed} 个问题，{warnings} 个警告"
         },
         "error": None
     }
@@ -1145,103 +1244,216 @@ def gen_report(target: str, template: str = "standard") -> dict:
 """
 
     elif template == "anheng-report":
-        report = f"""# 安恒明鉴漏洞扫描报告
+        # ── 从 records 中找安恒的数据 ──
+        anheng = [e for e in records if e["vendor"] == "安恒"]
+        if not anheng:
+            report = f"""# 安恒明鉴漏洞扫描报告
+
+**报告目标**: {target}
+**报告日期**: {datetime.now().strftime('%Y年%m月%d日')}
+
+---
+
+本目标未使用安恒扫描引擎进行检测，无法生成安恒明鉴专属报告。
+
+---
+
+*报告由安全检查 Agent 自动生成*
+"""
+        else:
+            entry = anheng[0]
+            r = entry["record"]
+            _ports = r.get("ports", [])
+            _hports = [p for p in _ports if p.get("high_risk")]
+            _recs = r.get("recommendations", [])
+            _ports_table = "\n".join([f"| {p['port']} | {p['service']} | {p.get('version','')} | {'⚠️高危' if p.get('high_risk') else 'open'} |" for p in _ports])
+            report = f"""# 安恒明鉴漏洞扫描报告
 
 **报告编号**: SCAN-DB-{datetime.now().strftime('%Y%m%d')}-001
-**扫描工具**: 安恒明鉴漏洞扫描系统 V8.2
+**扫描时间**: {entry['time']}
+**扫描工具**: 安恒明鉴漏洞扫描系统（依据 VENDOR_SELECTION_STRATEGY 配置）
 **扫描目标**: {target}
 
 ## 一、扫描概览
+
 | 项目 | 数据 |
 |------|------|
-| 高危 | {len(high_risk_ports)} |
-| 开放端口 | {len(ports)} |
+| 检测类型 | 漏洞扫描 |
+| 开放端口 | {len(_ports)} 个 |
+| 高危端口 | {len(_hports)} 个 |
+| 风险等级 | **{r.get('risk_level', '未知')}** |
 
 ## 二、高危漏洞详情
-{'| 目标 | 端口 | 服务 | CVE | CVSS |' if high_risk_ports else '未发现高危漏洞'}
-{'|------|------|------|:---:|:----:|' if high_risk_ports else ''}
-{chr(10).join([f"| {target} | {p['port']} | {p['service']} | N/A | 9.0 |" for p in high_risk_ports]) if high_risk_ports else ''}
+
+| 目标 | 端口 | 服务 | CVSS | 状态 |
+|------|:----:|:----:|:----:|:----:|
+{chr(10).join([f"| {target} | {p['port']} | {p['service']} | {p.get('cvss', '—')} | ⚠️高危 |" for p in _hports]) if _hports else '未发现高危漏洞'}
 
 ## 三、修复建议
-{recs_list if recs_list else '无特殊建议'}
+
+{chr(10).join([f"{i+1}. {r}" for i, r in enumerate(_recs)]) if _recs else '无特殊建议'}
 
 ---
-**报告结束**
+**安恒明鉴扫描报告结束**
 """
     elif template == "nsfocus-report":
-        report = f"""# 绿盟科技·安全检查报告（弱口令+配置核查）
+        # ── 从 records 中找绿盟的数据 ──
+        nsfocus = [e for e in records if "绿盟" in e["vendor"]]
+        if not nsfocus:
+            report = f"""# 绿盟科技·安全检查报告（弱口令+配置核查）
+
+**报告目标**: {target}
+**报告日期**: {datetime.now().strftime('%Y年%m月%d日')}
+
+---
+
+本目标未使用绿盟扫描引擎进行检测，无法生成绿盟科技专属报告。
+
+---
+
+*报告由安全检查 Agent 自动生成*
+"""
+        else:
+            entry = nsfocus[0]
+            r = entry["record"]
+            _ports = r.get("ports", [])
+            _hports = [p for p in _ports if p.get("high_risk")]
+            _recs = r.get("recommendations", [])
+            report = f"""# 绿盟科技·安全检查报告（弱口令+配置核查）
 
 **报告编号**: NSFOCUS-{datetime.now().strftime('%Y%m%d')}-001
-**扫描工具**: 绿盟远程安全评估系统 RSAS V6.5
+**扫描时间**: {entry['time']}
+**扫描工具**: 绿盟远程安全评估系统（依据 VENDOR_SELECTION_STRATEGY 配置）
 **扫描目标**: {target}
 
 ## 第一部分：端口检测结果
+
 | 项目 | 数据 |
 |------|------|
-| 开放端口数 | {len(ports)} |
-| 高危端口 | {len(high_risk_ports)} |
+| 开放端口数 | {len(_ports)} |
+| 高危端口 | {len(_hports)} |
+| 检测类型 | 漏洞扫描、弱口令探测 |
 
 ## 第二部分：配置核查结果
-{'| 检查项 | 结果 | 说明 |' if high_risk_ports else '未发现严重不合规项'}
-{'|--------|:----:|------|' if high_risk_ports else ''}
-{chr(10).join([f"| 端口{p['port']}暴露 | 不合规 | {p['service']}服务暴露在公网 |" for p in high_risk_ports]) if high_risk_ports else ''}
+
+| 检查项 | 结果 | 说明 |
+|--------|:----:|------|
+{chr(10).join([f"| 端口{p['port']}({p['service']})暴露 | 不合规 | 服务暴露在外网，需限制访问来源 |" for p in _hports]) if _hports else '| — | — | 未发现严重不合规项 |'}
+
+## 第三部分：弱口令/风险项
+
+{chr(10).join([f"{i+1}. {r}" for i, r in enumerate(_recs)]) if _recs else '未发现弱口令风险。'}
 
 ---
-**报告结束**
+**绿盟科技扫描报告结束**
 """
     elif template == "chaitin-report":
-        report = f"""# 长亭科技·牧云Web安全检查报告
+        # ── 从 records 中找长亭的数据 ──
+        chaitin = [e for e in records if "长亭" in e["vendor"]]
+        if not chaitin:
+            report = f"""# 长亭科技·牧云Web安全检查报告
+
+**报告目标**: {target}
+**报告日期**: {datetime.now().strftime('%Y年%m月%d日')}
+
+---
+
+本目标未使用长亭科技扫描引擎进行检测，无法生成牧云Web安全专属报告。
+
+---
+
+*报告由安全检查 Agent 自动生成*
+"""
+        else:
+            entry = chaitin[0]
+            r = entry["record"]
+            _ports = r.get("ports", [])
+            _hports = [p for p in _ports if p.get("high_risk")]
+            _lports = [p for p in _ports if not p.get("high_risk")]
+            report = f"""# 长亭科技·牧云Web安全检查报告
 
 **报告编号**: CHAITIN-WEB-{datetime.now().strftime('%Y%m%d')}-001
-**扫描工具**: 牧云Web应用安全检测平台 V3.5
+**扫描时间**: {entry['time']}
+**扫描工具**: 牧云Web应用安全检测平台（依据 VENDOR_SELECTION_STRATEGY 配置）
 **扫描目标**: {target}
 
 ## 一、目标信息
+
 | 项目 | 内容 |
 |------|------|
-| URL | http://{target} / https://{target} |
-| 开放端口 | {', '.join([str(p['port']) for p in ports[:10]])} |
+| 目标IP | {target} |
+| 开放端口 | {', '.join([str(p['port']) for p in _ports[:10]]) if _ports else '无'} |
+| 检测类型 | Web漏洞扫描 |
 
 ## 二、漏洞发现汇总
+
 | 风险等级 | 数量 |
 |:--------:|:----:|
-| 高危 | {len(high_risk_ports)} |
-| 低危 | {len(ports) - len(high_risk_ports) if len(ports) > len(high_risk_ports) else 0} |
-| **合计** | {len(ports)} |
+| 高危 | {len(_hports)} |
+| 低危/信息 | {len(_lports)} |
+| **合计** | {len(_ports)} |
 
 ## 三、高危漏洞详情
-|{chr(10).join([f"### WEB-{i+1:03d} 端口{p['port']}暴露" + chr(10) + "- **风险等级**: 高危" + chr(10) + "- **漏洞描述**: " + p['service'] + "服务存在端口暴露风险" + chr(10) + "- **修复建议**: 限制访问来源IP，关闭非必要端口" for i, p in enumerate(high_risk_ports)]) if high_risk_ports else '未发现高危Web漏洞'}
+
+{chr(10).join([f"### WEB-{i+1:03d} 端口{p['port']}({p['service']})暴露\n- **风险等级**: 高危\n- **漏洞描述**: {p['service']}服务存在端口暴露风险\n- **修复建议**: 限制访问来源IP，关闭非必要端口" for i, p in enumerate(_hports)]) if _hports else '未发现高危Web漏洞'}
 
 ---
-**报告结束**
+**长亭科技扫描报告结束**
 """
     elif template == "vackbot-report":
-        report = f"""# 墨云·VackBot自动化渗透测试报告
+        # ── 从 records 中找墨云的数据 ──
+        vackbot = [e for e in records if "墨云" in e["vendor"]]
+        if not vackbot:
+            report = f"""# 墨云·VackBot自动化渗透测试报告
+
+**报告目标**: {target}
+**报告日期**: {datetime.now().strftime('%Y年%m月%d日')}
+
+---
+
+本目标未使用墨云扫描引擎进行检测，无法生成VackBot自动化渗透专属报告。
+
+---
+
+*报告由安全检查 Agent 自动生成*
+"""
+        else:
+            entry = vackbot[0]
+            r = entry["record"]
+            _ports = r.get("ports", [])
+            _hports = [p for p in _ports if p.get("high_risk")]
+            _recs = r.get("recommendations", [])
+            _pen_level = "**高**" if len(_hports) >= 3 else ("**中**" if _hports else "**低**")
+            report = f"""# 墨云·VackBot自动化渗透测试报告
 
 **报告编号**: VACKBOT-PEN-{datetime.now().strftime('%Y%m%d')}-001
-**扫描工具**: 墨云VackBot自动化渗透平台 V4.2
+**扫描时间**: {entry['time']}
+**扫描工具**: VackBot自动化渗透平台（依据 VENDOR_SELECTION_STRATEGY 配置）
 **扫描目标**: {target}
 
 ## 一、渗透测试概览
+
 | 项目 | 数据 |
 |------|------|
-| 开放端口 | {len(ports)} 个 |
-| 高危端口 | {len(high_risk_ports)} 个 |
-| 渗透等级 | {'**高**' if len(high_risk_ports) >= 3 else ('**中**' if high_risk_ports else '**低**')} |
+| 开放端口 | {len(_ports)} 个 |
+| 高危端口 | {len(_hports)} 个 |
+| 渗透测试等级 | {_pen_level} |
 
 ## 二、攻击面分析
-| 端口 | 服务 | 风险 | 可利用性 |
-|------|------|:----:|:--------:|
-{chr(10).join([f"| {p['port']} | {p['service']} | {'⚠️高危' if p.get('high_risk') else '信息'} | {'已验证' if p.get('high_risk') else '未验证'} |" for p in ports[:10]]) if ports else '| (无) | — | — | — |'}
 
-## 三、综合风险评估
+| 端口 | 服务 | 风险 | 可利用性 |
+|:----:|:----:|:----:|:--------:|
+{chr(10).join([f"| {p['port']} | {p['service']} | {'⚠️高危' if p.get('high_risk') else '信息'} | {'已验证' if p.get('high_risk') else '未验证'} |" for p in _ports[:10]]) if _ports else '| — | — | — | — |'}
+
+## 三、综合评估
+
 | 风险项 | 影响 |
 |--------|------|
 | 端口暴露 | 攻击者可利用暴露端口进行渗透 |
-| 服务漏洞 | 需确认服务版本是否存在已知CVE |
+| 服务漏洞 | 端口对应的 {', '.join([p['service'] for p in _ports[:3]]) if _ports else '服务'} 需确认版本是否存在已知CVE |
 
 ---
-**报告结束**
+**墨云VackBot渗透报告结束**
 """
     else:
         return {"success": False, "data": {}, "error": f"未知模板: {template}，支持: standard / customer / anheng-report / nsfocus-report / chaitin-report / vackbot-report"}

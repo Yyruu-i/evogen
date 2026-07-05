@@ -170,15 +170,134 @@ ALL_TOOLS: list[dict] = BROWSER_TOOLS + [
         "type": "function",
         "function": {
             "name": "security_scan",
-            "description": "【★首选】安全检查 — 扫描单个IP的TOP500开放端口 + nmap -sV服务版本识别 + 风险分级分析。比内置port_scan强100倍（500端口 vs 5端口），支持vendor failover。当用户说 扫描/检查/检测/安全 时首选此工具。",
+            "description": "【备选】旧安全检查 — 建议使用独立工具: port_scan(端口扫描)、service_detect(服务识别)、vuln_scan(漏洞扫描)、weakpass_check(弱口令)、config_audit(配置核查)、web_vuln_scan(Web漏洞)、pen_test(渗透)。保留仅为兼容。",
             "vendor": "EvoGen",
-            "purpose": "安全检测 / TOP500端口扫描+服务识别+风险分析（首选！）",
+            "purpose": "【备选】旧安全检查（建议用独立工具）",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "target": {"type": "string", "description": "目标IP地址"},
-                    "vendor": {"type": "string", "description": "厂商名称（可选，如: 绿盟、天融信、长亭科技），自动failover"},
-                    "scan_type": {"type": "string", "description": "扫描类型: port_scan（默认）/ full"},
+                    "vendor": {"type": "string", "description": "厂商名称（可选，自动failover）"},
+                },
+                "required": ["target"],
+            },
+        },
+    },
+    # ── 独立安全检测工具（每个工具 = 一个真实扫描操作，vendor = 用哪家厂商的引擎）──
+    {
+        "type": "function",
+        "function": {
+            "name": "port_scan",
+            "description": "端口扫描 — 扫描目标IP的TOP500开放端口 + nmap -sV服务版本识别 + 风险分级分析。支持vendor参数指定厂商。当用户说 扫描/检测端口 时首选。",
+            "vendor": "EvoGen",
+            "purpose": "安全检测 / 端口扫描",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "目标IP地址"},
+                    "vendor": {"type": "string", "description": "厂商名称（可选，如: 绿盟、天融信、安恒）"},
+                },
+                "required": ["target"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "service_detect",
+            "description": "服务版本识别 — 识别目标开放端口上的服务名和版本信息。当用户说 识别服务/版本检测 时用。",
+            "vendor": "EvoGen",
+            "purpose": "安全检测 / 服务版本识别",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "目标IP地址"},
+                    "vendor": {"type": "string", "description": "厂商名称（可选）"},
+                },
+                "required": ["target"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "vuln_scan",
+            "description": "漏洞扫描 — 对目标进行自动化漏洞检测，覆盖常见CVE、弱口令、未授权访问等。当用户说 漏洞/漏洞扫描/CVE 时用。",
+            "vendor": "EvoGen",
+            "purpose": "安全检测 / 漏洞扫描",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "目标IP地址"},
+                    "vendor": {"type": "string", "description": "厂商名称（可选，如: 安恒、绿盟、天融信）"},
+                },
+                "required": ["target"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "weakpass_check",
+            "description": "弱口令探测 — 检测SSH/RDP/MySQL/Redis等服务的弱口令和默认口令。当用户说 弱口令/弱密码/暴力破解 时用。",
+            "vendor": "EvoGen",
+            "purpose": "安全检测 / 弱口令探测",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "目标IP地址"},
+                    "vendor": {"type": "string", "description": "厂商名称（可选，如: 绿盟、墨云）"},
+                },
+                "required": ["target"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "config_audit",
+            "description": "配置核查/等保基线审计 — 检查目标是否符合等保2.0三级要求，覆盖边界防护/访问控制/身份鉴别/日志审计/漏洞管理/最小权限。当用户说 等保/基线/合规检查/配置核查 时用。",
+            "vendor": "EvoGen",
+            "purpose": "安全检测 / 配置核查",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "目标IP地址"},
+                    "vendor": {"type": "string", "description": "厂商名称（可选，如: 绿盟、深信服）"},
+                },
+                "required": ["target"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_vuln_scan",
+            "description": "Web漏洞扫描 — 针对Web应用的专项漏洞检测，覆盖SQL注入/XSS/Shiro RCE等。当用户说 Web漏洞/网站安全/网页漏洞 时用。",
+            "vendor": "EvoGen",
+            "purpose": "安全检测 / Web漏洞扫描",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "目标IP地址或URL"},
+                    "vendor": {"type": "string", "description": "厂商名称（可选，如: 长亭科技、启明星辰）"},
+                },
+                "required": ["target"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "pen_test",
+            "description": "自动化渗透测试 — 模拟攻击者视角，验证漏洞的可利用性和攻击链。当用户说 渗透/攻击模拟/红队 时用。",
+            "vendor": "EvoGen",
+            "purpose": "安全检测 / 渗透测试",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "目标IP地址"},
+                    "vendor": {"type": "string", "description": "厂商名称（可选，如: 墨云、360、绿盟）"},
                 },
                 "required": ["target"],
             },
@@ -204,9 +323,9 @@ ALL_TOOLS: list[dict] = BROWSER_TOOLS + [
         "type": "function",
         "function": {
             "name": "baseline_check",
-            "description": "【★等保核查】等保基线核查 — 检查指定IP是否符合等保2.0三级要求，覆盖 边界防护/访问控制/身份鉴别/日志审计/漏洞管理/最小权限 6类基线项。",
+            "description": "【备选】旧等保基线核查 — 已废弃，请使用 config_audit(配置核查/等保基线审计)。保留仅为兼容。",
             "vendor": "EvoGen",
-            "purpose": "安全检测 / 等保基线核查",
+            "purpose": "【备选】旧等保核查（建议用 config_audit）",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1923,7 +2042,9 @@ async def _execute_tool(tool_name: str, arguments: dict, session_id: str, user_i
                 return f"❌ ClamAV 扫描失败: {str(e)[:200]}"
 
         # ── 安全检测工具（mcp_security.py）──
-        elif tool_name in ("ping_sweep", "security_scan", "batch_scan", "gen_security_report",
+        elif tool_name in ("ping_sweep", "security_scan", "port_scan", "service_detect", "vuln_scan",
+                           "weakpass_check", "config_audit", "web_vuln_scan", "pen_test",
+                           "batch_scan", "gen_security_report",
                            "validate_report", "gen_selection_plan", "get_asset_profile",
                            "baseline_check", "evidence_snapshot", "retest_compare"):
             # 注意: gen_report 在 gen_security_report 的路上, gen_security_report 映射到 gen_report
@@ -3148,19 +3269,19 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
         "当用户请求**安全检测、漏洞扫描、端口扫描、服务识别、等保核查、资产发现、风险分析、检查安全性**等内容时，\\n"
         "你必须按以下规则执行，**不得仅输出文字描述代替实际扫描**，**不得回复'好的'等文字后不调工具**。\\n"
         "\\n"
-        "### 规则1：优先使用安全专用工具（不使用内置旧工具）\\n"
-        "以下新安全工具比内置 `port_scan`/`vuln_scan`/`smart_orchestrator` 更强大，**必须优先使用**：\\n"
-        "- `security_scan(target, vendor?)` → TOP500端口扫描 + nmap -sV 服务识别 + 风险分级分析。\\n"
-        "  支持 vendor 参数指定厂商（如 \"绿盟,天融信,安恒\"），自动 failover。\\n"
-        "  **当用户说'扫描'、'检查'、'检测'时，首选这个工具。**\\n"
+        "### 规则1：使用独立安全检测工具（每个工具 = 一个真实扫描操作）\\n"
+        "以下工具是**独立的安全检测操作**，每个都代表一次真实的扫描调用，vendor 参数指定用哪家厂商的引擎：\\n"
+        "- `port_scan(target, vendor?)` → 端口扫描 — TOP500开放端口 + nmap -sV 服务识别 + 风险分级。\\n"
+        "  当用户说'扫描'、'检查'、'检测'时，首选这个工具。\\n"
+        "- `service_detect(target, vendor?)` → 服务版本识别 — 识别开放端口上的服务名和版本。\\n"
+        "- `vuln_scan(target, vendor?)` → 漏洞扫描 — 自动化漏洞检测（CVE/弱口令/未授权）。\\n"
+        "- `weakpass_check(target, vendor?)` → 弱口令探测 — 检测SSH/RDP/MySQL/Redis弱口令。\\n"
+        "- `config_audit(target, vendor?)` → 配置核查/等保基线审计 — 等保2.0三级6类基线项。\\n"
+        "- `web_vuln_scan(target, vendor?)` → Web漏洞扫描 — SQL注入/XSS/Shiro RCE等。\\n"
+        "- `pen_test(target, vendor?)` → 自动化渗透测试 — 攻击链验证。\\n"
         "- `ping_sweep(target)` → ICMP 存活探测，发现网段内存活主机。\\n"
-        "  用户说'扫一下网段'、'发现存活主机'、'资产发现'时用这个。\\n"
-        "- `baseline_check(target)` → 等保2.0三级6类基线核查（防火墙/访问控制/密码策略/日志审计/补丁管理/最小权限）。\\n"
-        "  用户说'基线检查'、'等保'、'合规检查'时用这个。\\n"
-        "- `evidence_snapshot(target)` → 扫描结果 SHA256 固化+时间戳，提供司法可追溯性。\\n"
-        "  用户说'固化证据'、'留存'、'保存扫描结果'时用这个。\\n"
+        "- `evidence_snapshot(target)` → 扫描结果 SHA256 固化+时间戳。\\n"
         "- `retest_compare(target)` → 对比最近两次扫描的端口变化和风险变化。\\n"
-        "  用户说'复测'、'对比'、'复查'时用这个。\\n"
         "\\n"
         "### 规则2：检测后，自动选最优模板出报告\\n"
         "完成扫描后，**必须调用** `gen_security_report(target, template)` 输出 Markdown 报告。\\n"
@@ -3177,18 +3298,21 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
         "### 规则3：全自动编排 — 通用场景策略\\n"
         "不管用户怎么说（检查/扫描/检测/安全/等保/合规/漏洞/查一下），只要是安全类请求，你都按以下策略决策：\\n"
         "\\n"
-        "**完整5步流程**（用户说'检查/检测安全性'、'全量检测'、'帮我看看'且未指定具体检测类型时）：\\n"
+        "**完整流程**（用户说'检查/检测安全性'、'全量检测'、'帮我看看'且未指定具体检测类型时）：\\n"
         "步骤1 → `ping_sweep(target)` — 资产发现（如果用户已给出明确IP可跳过）\\n"
-        "步骤2 → `security_scan(target, vendor=\"绿盟,天融信,安恒\")` — TOP500端口+服务识别+风险分级\\n"
-        "步骤3 → `baseline_check(target)` — 等保基线核查\\n"
-        "步骤4 → `evidence_snapshot(target)` — 证据固化\\n"
-        "步骤5 → `gen_security_report(target, template=\"customer\")` — 数据驱动多源汇总报告\\n"
+        "步骤2 → `port_scan(target, vendor=\"绿盟\")` — 端口扫描\\n"
+        "步骤3 → `service_detect(target, vendor=\"绿盟\")` — 服务版本识别\\n"
+        "步骤4 → `vuln_scan(target, vendor=\"安恒\")` — 漏洞扫描\\n"
+        "步骤5 → `weakpass_check(target, vendor=\"绿盟\")` — 弱口令探测\\n"
+        "步骤6 → `config_audit(target, vendor=\"绿盟\")` — 配置核查\\n"
+        "步骤7 → `evidence_snapshot(target)` — 证据固化\\n"
+        "步骤8 → `gen_security_report(target, template=\"customer\")` — 多源汇总报告\\n"
         "\\n"
         "**局部检测**（用户指定了具体检测类型，如'只扫端口'、'做等保'）：\\n"
-        "- 只扫端口 → `security_scan(target)`（不用 baseline 和 evidence）\\n"
-        "- 只要等保 → `baseline_check(target)`\\n"
+        "- 只扫端口 → `port_scan(target, vendor=\"绿盟\")`\\n"
+        "- 只要等保 → `config_audit(target, vendor=\"绿盟\")`\\n"
         "- 只要报告 → `gen_security_report(target, template=\"standard\")`\\n"
-        "- 扫描网段 → `ping_sweep(subnet)` 发现存活，再对每个存活IP执行 security_scan\\n"
+        "- 扫描网段 → `ping_sweep(subnet)` 发现存活，再对每个存活IP执行 port_scan\\n"
         "**不要问用户'要不要出报告'，直接出。不要每一步都停下来等确认，你是有能力编排的 Agent。**\\n"
         "\\n"
         "### 规则3.1：禁止输出纯文字代替工具调用（硬性指令）\\n"

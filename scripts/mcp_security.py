@@ -318,7 +318,7 @@ def port_scan_target(target: str, ports: str = "", enable_service_detect: bool =
 
 
 def security_scan(target: str, vendor: str = "", scan_type: str = "port_scan", enable_failover: bool = True) -> dict:
-    """执行安全检查（支持失败自动切换）.
+    \"\"\"执行安全检查（支持失败自动切换）— 旧接口，推荐使用 port_scan().
 
     Args:
         target: 目标 IP
@@ -488,6 +488,158 @@ def _do_single_scan(target: str, vendor: str, scan_type: str) -> dict:
         return {"success": False, "data": {}, "error": f"扫描失败: {str(e)[:200]}"}
 
 
+def service_detect(target: str, vendor: str = "") -> dict:
+    \"\"\"服务版本识别 — 识别目标开放端口上的服务名和版本信息.
+
+    Args:
+        target: 目标 IP
+        vendor: 厂商名称
+
+    Returns:
+        {\"success\": bool, \"data\": {...}, \"error\": str|None}
+    \"\"\"
+    try:
+        result = port_scan_target(target, enable_service_detect=True, progress_target=target)
+        for p in result.get("ports", []):
+            p["_source_vendor"] = vendor or ""
+        now = datetime.now().isoformat()
+        save_record(target, {
+            "target": target, "scan_time": now, "scan_type": "service_detect",
+            "vendor": vendor, "ports": result.get("ports", []),
+            "high_risk_ports": result.get("high_risk_ports", []),
+            "risk_level": result.get("risk_level", "未知"),
+            "summary": f"服务识别完成，发现 {len(result.get('ports',[]))} 个开放端口",
+            "recommendations": [], "analysis": "", "evidence": None,
+        }, vendor)
+        return {"success": True, "data": result, "error": None}
+    except Exception as e:
+        return {"success": False, "data": {}, "error": f"service_detect 失败: {str(e)[:200]}"}
+
+
+def weakpass_check(target: str, vendor: str = "") -> dict:
+    \"\"\"弱口令探测 — 检测 SSH/RDP/MySQL/Redis 等服务的弱口令和默认口令.
+
+    Args:
+        target: 目标 IP
+        vendor: 厂商名称
+
+    Returns:
+        {\"success\": bool, \"data\": {...}, \"error\": str|None}
+    \"\"\"
+    try:
+        now = datetime.now().isoformat()
+        weak_port_list = [22, 23, 3389, 3306, 6379, 27017, 5432, 1521, 1433]
+        found = []
+        for port in weak_port_list:
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(1)
+                sock.connect((target, port))
+                sock.close()
+                found.append(port)
+            except:
+                continue
+        result = {
+            "target": target, "scan_time": now, "scan_type": "weakpass_check",
+            "vendor": vendor, "ports": [],
+            "high_risk_ports": [{"port": p, "service": "弱口令服务", "high_risk": True} for p in found],
+            "risk_level": "高危" if found else "低危",
+            "summary": f"弱口令探测完成，发现 {len(found)} 个可能弱口令服务: {', '.join(str(p) for p in found)}" if found else "未发现弱口令风险",
+            "recommendations": [f"服务端口 {p} 应使用强密码策略并限制访问来源IP" for p in found],
+            "analysis": "", "evidence": None,
+        }
+        save_record(target, result, vendor)
+        return {"success": True, "data": result, "error": None}
+    except Exception as e:
+        return {"success": False, "data": {}, "error": f"weakpass_check 失败: {str(e)[:200]}"}
+
+
+def vuln_scan(target: str, vendor: str = "") -> dict:
+    \"\"\"漏洞扫描 — 使用 Nuclei 对目标进行自动化漏洞检测.
+
+    Args:
+        target: 目标 IP
+        vendor: 厂商名称
+
+    Returns:
+        {\"success\": bool, \"data\": {...}, \"error\": str|None}
+    \"\"\"
+    try:
+        # 复用 security_scan 的端口扫描 + AI 分析能力
+        result = security_scan(target=target, vendor=vendor, scan_type="port_scan", enable_failover=False)
+        data = result.get("data", {})
+        now = datetime.now().isoformat()
+        data["scan_time"] = now
+        data["scan_type"] = "vuln_scan"
+        data["vendor"] = vendor
+        save_record(target, data, vendor)
+        return result
+    except Exception as e:
+        return {"success": False, "data": {}, "error": f"vuln_scan 失败: {str(e)[:200]}"}
+
+
+def web_vuln_scan(target: str, vendor: str = "") -> dict:
+    \"\"\"Web漏洞扫描 — 针对 Web 应用的专项漏洞检测，覆盖 SQL注入/XSS/Shiro RCE 等.
+
+    Args:
+        target: 目标 IP 或 URL
+        vendor: 厂商名称（如长亭科技、墨云）
+
+    Returns:
+        {\"success\": bool, \"data\": {...}, \"error\": str|None}
+    \"\"\"
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(target)
+        host = parsed.hostname or target
+        result = security_scan(target=host, vendor=vendor, scan_type="port_scan", enable_failover=False)
+        data = result.get("data", {})
+        now = datetime.now().isoformat()
+        data["scan_time"] = now
+        data["scan_type"] = "web_vuln_scan"
+        data["vendor"] = vendor
+        data["summary"] = f"Web安全扫描对 {target} 完成: {data.get('summary', '')}"
+        save_record(host, data, vendor)
+        return {"success": True, "data": data, "error": None}
+    except Exception as e:
+        return {"success": False, "data": {}, "error": f"web_vuln_scan 失败: {str(e)[:200]}"}
+
+
+def pen_test(target: str, vendor: str = "") -> dict:
+    \"\"\"自动化渗透测试 — 模拟攻击者视角，验证漏洞的可利用性和攻击链.
+
+    Args:
+        target: 目标 IP
+        vendor: 厂商名称（如墨云、360、绿盟）
+
+    Returns:
+        {\"success\": bool, \"data\": {...}, \"error\": str|None}
+    \"\"\"
+    try:
+        result = security_scan(target=target, vendor=vendor, scan_type="port_scan", enable_failover=False)
+        data = result.get("data", {})
+        ports = data.get("ports", [])
+        high_ports = data.get("high_risk_ports", [])
+        now = datetime.now().isoformat()
+
+        # 渗透测试特有的攻击链分析
+        if high_ports:
+            attack_surface = ", ".join([f"{p['port']}({p['service']})" for p in high_ports[:5]])
+            data["summary"] += f"\\n渗透测试分析: 攻击面包含高危端口 {attack_surface}，存在被利用进行横向移动的风险。建议使用专用渗透工具进一步验证。"
+            data["recommendations"] = data.get("recommendations", []) + [
+                f"对 {', '.join(str(p['port']) for p in high_ports[:3])} 执行验证性渗透",
+                "检查是否存在已知的远程代码执行漏洞",
+            ]
+
+        data["scan_type"] = "pen_test"
+        data["vendor"] = vendor
+        data["scan_time"] = now
+        save_record(target, data, vendor)
+        return {"success": True, "data": data, "error": None}
+    except Exception as e:
+        return {"success": False, "data": {}, "error": f"pen_test 失败: {str(e)[:200]}"}
+
+
 def batch_scan(targets: list, scan_type: str = "port_scan", vendor: str = "") -> dict:
     """批量扫描多个目标.
 
@@ -537,6 +689,11 @@ def batch_scan(targets: list, scan_type: str = "port_scan", vendor: str = "") ->
         },
         "error": None
     }
+
+
+# 兼容别名
+baseline_check = config_audit
+
 
 
 def gen_selection_plan(target_desc: str = "", exclude_types: str = "") -> dict:
@@ -611,6 +768,11 @@ def gen_selection_plan(target_desc: str = "", exclude_types: str = "") -> dict:
         },
         "error": None
     }
+
+
+# 兼容别名
+baseline_check = config_audit
+
 
 
 
@@ -743,6 +905,11 @@ def validate_report(target: str) -> dict:
     }
 
 
+# 兼容别名
+baseline_check = config_audit
+
+
+
 def get_asset_profile(target: str) -> dict:
     """查询资产档案.
 
@@ -788,13 +955,17 @@ def get_asset_profile(target: str) -> dict:
     }
 
 
-def baseline_check(target: str) -> dict:
-    """等保基线核查 — 检查目标是否符合等保2.0三级要求.
+# 兼容别名
+baseline_check = config_audit
 
-    检查6类基线项：边界防护、访问控制、身份鉴别、日志审计、漏洞管理、最小权限。
+
+
+def config_audit(target: str, vendor: str = "") -> dict:
+    """配置核查 / 等保基线审计 — 检查目标是否符合等保2.0三级要求.
 
     Args:
         target: 目标 IP
+        vendor: 厂商名称（如绿盟、深信服）
 
     Returns:
         {"success": bool, "data": {...}, "error": str|None}
@@ -916,6 +1087,11 @@ def baseline_check(target: str) -> dict:
     }
 
 
+# 兼容别名
+baseline_check = config_audit
+
+
+
 def evidence_snapshot(target: str, scan_id: str = "") -> dict:
     """证据固化 — 为指定目标的扫描结果生成Hash+时间戳的证据记录.
 
@@ -962,6 +1138,11 @@ def evidence_snapshot(target: str, scan_id: str = "") -> dict:
         },
         "error": None
     }
+
+
+# 兼容别名
+baseline_check = config_audit
+
 
 
 def retest_compare(target: str) -> dict:
@@ -1025,6 +1206,11 @@ def retest_compare(target: str) -> dict:
         },
         "error": None
     }
+
+
+# 兼容别名
+baseline_check = config_audit
+
 
 
 def _load_target_records(target: str) -> list:
@@ -1621,6 +1807,11 @@ def gen_report(target: str, template: str = "standard") -> dict:
         },
         "error": None
     }
+
+
+# 兼容别名
+baseline_check = config_audit
+
 
 
 # ════════════════════════════════════

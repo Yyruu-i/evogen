@@ -2410,7 +2410,12 @@ async def _tool_loop_stream_generator(
                 start_ts = int(time.time() * 1000)
 
                 # 通知前端：开始执行工具
+                # 通知前端：开始执行工具
                 yield f"data: {json.dumps({'status': 'tool_start', 'callId': call_id, 'tool': tool_name, 'args': tool_args, 'timestamp': start_ts})}\n\n"
+                # 通知前端：工具执行进度（支持编排进度展示）
+                total_tools = len(tool_calls_for_round)
+                current_idx = tool_calls_for_round.index(tc) + 1
+                yield f"data: {json.dumps({'status': 'progress', 'callId': call_id, 'tool': tool_name, 'current': current_idx, 'total': total_tools, 'stage': '执行中', 'detail': f'正在执行 {tool_name} ({current_idx}/{total_tools})'})}\n\n"
 
                 # 检查工具是否已被禁用（连续失败2次）
                 if tool_fail_count.get(tool_name, 0) >= 2:

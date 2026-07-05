@@ -221,6 +221,14 @@ export function ChatPage() {
                 success: false,
               });
             }
+            // ── 处理进度 —— 更新工具执行进度 ──
+            if (parsed.status === 'progress' && parsed.callId) {
+              updateToolCallRef.current({
+                callId: parsed.callId,
+                progress: `${parsed.current || 0}/${parsed.total || 0}`,
+                progressDetail: parsed.detail || '',
+              });
+            }
           } catch {
             // 非 JSON 数据忽略，不显示到正文
           }

@@ -338,4 +338,6 @@ export interface ToolCallInfo {
   errorMsg?: string;
   success?: boolean;
   timestamp?: number;
+  progress?: string;      // "1/4" 格式的进度
+  progressDetail?: string; // 进度详情文本
 }

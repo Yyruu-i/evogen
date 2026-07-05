@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
-import { Wrench, CheckCircle, XCircle, Clock, ChevronDown, ChevronRight, ChevronUp, Loader2 } from 'lucide-react';
+import { Wrench, CheckCircle, XCircle, Clock, ChevronDown, ChevronUp, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 interface ToolCallInfo {
@@ -11,6 +11,8 @@ interface ToolCallInfo {
   errorMsg?: string;
   success?: boolean;
   timestamp?: number;
+  progress?: string;      // "1/4" 格式的进度（来自 SSE progress 事件）
+  progressDetail?: string; // 进度详情文本（来自 SSE progress 事件）
 }
 
 interface ToolCallCardProps {
@@ -32,9 +34,6 @@ function formatCost(ms?: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-/**
- * 从 args JSON 中提取 target/IP 字段
- */
 function extractTargetFromArgs(argsStr: string): string | null {
   try {
     const parsed = JSON.parse(argsStr);
@@ -44,30 +43,22 @@ function extractTargetFromArgs(argsStr: string): string | null {
   }
 }
 
-/**
- * 判断该工具是否支持进度查询
- */
 function supportsProgress(toolName: string): boolean {
-  return toolName === 'security_scan' || toolName === 'port_scan_target' || toolName === 'port_scan';
+  // 所有安全检测工具都支持进度
+  const secTools = ['port_scan','security_scan','service_detect','vuln_scan',
+    'weakpass_check','config_audit','web_vuln_scan','pen_test','baseline_check'];
+  return secTools.includes(toolName);
 }
 
-/**
- * 获取 API base URL（与前端页面相同的 origin）
- */
 function getApiBase(): string {
   return `${window.location.protocol}//${window.location.host}`;
 }
 
-/**
- * 专用于 security_scan / port_scan_target 的进度轮询 hook
- * 工具执行期间（!success && !errorMsg）轮询进度 API
- */
 function useProgressPolling(toolName: string, args: string, finished: boolean) {
   const [progress, setProgress] = useState<{ stage: string; detail: string; percent: number } | null>(null);
   const target = useMemo(() => extractTargetFromArgs(args), [args]);
 
   useEffect(() => {
-    // 只在支持进度查询且工具尚未结束时轮询
     if (!supportsProgress(toolName) || !target || finished) {
       setProgress(null);
       return;
@@ -85,16 +76,12 @@ function useProgressPolling(toolName: string, args: string, finished: boolean) {
           }
         }
       } catch {
-        // 忽略网络错误，静默重试
+        // ignore
       }
     };
 
-    // 立即执行一次
     poll();
-
-    // 每 1 秒轮询一次
     const interval = setInterval(poll, 1000);
-
     return () => {
       cancelled = true;
       clearInterval(interval);
@@ -107,22 +94,24 @@ function useProgressPolling(toolName: string, args: string, finished: boolean) {
 export function ToolCallCard({ call }: ToolCallCardProps) {
   const [expanded, setExpanded] = useState(false);
   const isSuccess = call.success !== false;
-  // 工具是否仍在执行中（未完成）
   const isInProgress = !call.result && !call.errorMsg && call.success === undefined;
-  // 进度轮询
   const progress = useProgressPolling(call.toolName, call.args, !isInProgress);
 
-  // 进度百分比颜色
+  // 优先使用 SSE 推送的进度，其次用轮询进度
+  const displayProgress = call.progress || '';
+  const displayProgressDetail = call.progressDetail || '';
+  const pollPercent = progress?.percent ?? 0;
+
   const progressColor =
-    progress && progress.percent >= 95
+    pollPercent >= 95
       ? 'var(--color-mint)'
-      : progress && progress.percent >= 50
+      : pollPercent >= 50
         ? 'var(--color-accent)'
         : 'var(--color-warning)';
 
   return (
     <div
-      className="rounded-2xl overflow-hidden text-[13px]"
+      className="rounded-2xl overflow-hidden text-[13px] transition-none"
       style={{
         background: 'var(--chat-bubble-assistant)',
         border: '1px solid var(--chat-bubble-assistant-border)',
@@ -132,7 +121,7 @@ export function ToolCallCard({ call }: ToolCallCardProps) {
       {/* ── Header ── */}
       <button
         onClick={() => setExpanded(!expanded)}
-        className="flex items-center gap-2 px-3.5 py-2.5 w-full text-left select-none hover:opacity-80 transition-all"
+        className="flex items-center gap-2 px-3.5 py-2.5 w-full text-left select-none hover:opacity-80 transition-none"
         style={{ color: 'var(--color-text-primary)' }}
       >
         {isInProgress ? (
@@ -142,8 +131,8 @@ export function ToolCallCard({ call }: ToolCallCardProps) {
         )}
         <span className="font-semibold text-[13px] flex-1">{call.toolName}</span>
 
-        {/* ── 进度显示 ── */}
-        {isInProgress && progress && (
+        {/* ── SSE 进度显示 ── */}
+        {isInProgress && displayProgress && (
           <span
             className="flex items-center gap-1.5 text-[11px] font-medium px-2 py-0.5 rounded-full"
             style={{
@@ -151,7 +140,20 @@ export function ToolCallCard({ call }: ToolCallCardProps) {
               color: 'var(--color-warning)',
             }}
           >
-            {progress.percent}%
+            {displayProgress}
+          </span>
+        )}
+
+        {/* ── 轮询进度百分比 ── */}
+        {isInProgress && !displayProgress && progress && (
+          <span
+            className="flex items-center gap-1.5 text-[11px] font-medium px-2 py-0.5 rounded-full"
+            style={{
+              background: 'rgba(255,170,51,0.1)',
+              color: 'var(--color-warning)',
+            }}
+          >
+            {pollPercent}%
           </span>
         )}
 
@@ -180,7 +182,19 @@ export function ToolCallCard({ call }: ToolCallCardProps) {
         )}
       </button>
 
-      {/* ── 进度条（仅执行中且可见） ── */}
+      {/* ── 进度详情（仅执行中） ── */}
+      {isInProgress && (displayProgressDetail || (progress && progress.detail)) && (
+        <div className="px-3.5 pb-2">
+          <div
+            className="text-[10px] leading-tight truncate"
+            style={{ color: 'var(--color-text-muted)' }}
+          >
+            {displayProgressDetail || progress?.detail || ''}
+          </div>
+        </div>
+      )}
+
+      {/* ── 进度条（仅执行中且轮询有数据） ── */}
       {isInProgress && progress && (
         <div className="px-3.5 pb-2">
           <div
@@ -190,17 +204,19 @@ export function ToolCallCard({ call }: ToolCallCardProps) {
             <div
               className="h-full rounded-full transition-all duration-500 ease-out"
               style={{
-                width: `${Math.min(100, progress.percent)}%`,
+                width: `${Math.min(100, pollPercent)}%`,
                 background: progressColor,
               }}
             />
           </div>
-          <div
-            className="mt-1 text-[10px] leading-tight truncate"
-            style={{ color: 'var(--color-text-muted)' }}
-          >
-            {progress.stage}{progress.detail ? ` — ${progress.detail}` : ''}
-          </div>
+          {progress.stage && (
+            <div
+              className="mt-1 text-[10px] leading-tight truncate"
+              style={{ color: 'var(--color-text-muted)' }}
+            >
+              {progress.stage}{progress.detail ? ` — ${progress.detail}` : ''}
+            </div>
+          )}
         </div>
       )}
 
@@ -249,7 +265,7 @@ export function ToolCallCard({ call }: ToolCallCardProps) {
             </div>
           )}
 
-          {/* 进度详情（展开时完整显示） */}
+          {/* 轮询进度详情（展开时完整显示） */}
           {progress && (
             <div>
               <div className="font-medium text-[11px] uppercase tracking-wider mb-1" style={{ color: 'var(--color-text-secondary)' }}>
@@ -263,12 +279,12 @@ export function ToolCallCard({ call }: ToolCallCardProps) {
                   <div
                     className="h-full rounded-full transition-all duration-500 ease-out"
                     style={{
-                      width: `${Math.min(100, progress.percent)}%`,
+                      width: `${Math.min(100, pollPercent)}%`,
                       background: progressColor,
                     }}
                   />
                 </div>
-                <span className="text-[11px] font-semibold whitespace-nowrap">{progress.percent}%</span>
+                <span className="text-[11px] font-semibold whitespace-nowrap">{pollPercent}%</span>
               </div>
               {progress.detail && (
                 <div className="mt-1 text-[11px]" style={{ color: 'var(--color-text-muted)' }}>

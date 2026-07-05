@@ -55,12 +55,31 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
       // 如果最后一条是 thinking 占位，替换掉它（保留已累积的 reasoning）
       if (last?.role === 'assistant' && last.id.startsWith('thinking-')) {
-        return { ...prev, messages: [...msgs.slice(0, -1), { id: `${prefix}${Date.now()}`, role: 'assistant', content: chunk, timestamp: new Date().toISOString(), reasoning: accumulatedReasoning, toolCalls: prev.toolCalls.length > 0 ? [...prev.toolCalls] : undefined }] };
+        const newMsg = {
+          id: `${prefix}${Date.now()}`,
+          role: 'assistant' as const,
+          content: chunk,
+          timestamp: new Date().toISOString(),
+          reasoning: accumulatedReasoning,
+          toolCalls: prev.toolCalls.length > 0 ? [...prev.toolCalls] : undefined,
+        };
+        return { ...prev, messages: [...msgs.slice(0, -1), newMsg] };
       }
       if (last?.role === 'assistant' && last.id.startsWith(prefix)) {
-        return { ...prev, messages: [...msgs.slice(0, -1), { ...last, content: last.content + chunk, toolCalls: prev.toolCalls.length > 0 ? [...prev.toolCalls] : undefined }] };
+        // 只有 chunk 有内容才更新 content；否则只更新 toolCalls（避免闪烁）
+        const updated = { ...last, toolCalls: prev.toolCalls.length > 0 ? [...prev.toolCalls] : last.toolCalls };
+        if (chunk) updated.content = last.content + chunk;
+        return { ...prev, messages: [...msgs.slice(0, -1), updated] };
       }
-      return { ...prev, messages: [...msgs, { id: `${prefix}${Date.now()}`, role: 'assistant', content: chunk, timestamp: new Date().toISOString(), toolCalls: prev.toolCalls.length > 0 ? [...prev.toolCalls] : undefined }] };
+      // 没有最后一条消息或不是流式 ID，创建新消息
+      const newMsg = {
+        id: `${prefix}${Date.now()}`,
+        role: 'assistant' as const,
+        content: chunk || '',
+        timestamp: new Date().toISOString(),
+        toolCalls: prev.toolCalls.length > 0 ? [...prev.toolCalls] : undefined,
+      };
+      return { ...prev, messages: [...msgs, newMsg] };
     });
   }, []);
 

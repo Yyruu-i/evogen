@@ -2051,6 +2051,37 @@ async def _execute_tool(tool_name: str, arguments: dict, session_id: str, user_i
             mcp_name = "gen_report" if tool_name == "gen_security_report" else tool_name
             result = _run_mcp_tool("scripts/mcp_security.py", mcp_name, arguments)
 
+            # ── 每个扫描工具自动存简报告到制品 ──
+            scan_tools = ("port_scan", "service_detect", "vuln_scan", "weakpass_check",
+                          "config_audit", "web_vuln_scan", "pen_test", "security_scan",
+                          "baseline_check", "ping_sweep", "evidence_snapshot")
+            if tool_name in scan_tools:
+                try:
+                    target = arguments.get("target", arguments.get("subnet", "unknown"))
+                    tool_label = {
+                        "port_scan": "端口扫描",
+                        "service_detect": "服务识别",
+                        "vuln_scan": "漏洞扫描",
+                        "weakpass_check": "弱口令探测",
+                        "config_audit": "配置核查",
+                        "web_vuln_scan": "Web漏洞扫描",
+                        "pen_test": "渗透测试",
+                        "security_scan": "安全检查",
+                        "baseline_check": "等保核查",
+                        "ping_sweep": "存活探测",
+                        "evidence_snapshot": "证据固化",
+                    }.get(tool_name, tool_name)
+                    brief = f"# {tool_label}报告 - {target}\n\n{tool_label}对 {target} 完成检测。\n\n{result[:500]}"
+                    store_artifact(
+                        "doc",
+                        f"{tool_label}_{target}",
+                        brief,
+                        session_id=session_id,
+                        user_id=user_id,
+                    )
+                except Exception as e:
+                    logger.debug(f"Auto-store artifact for {tool_name} skipped: {e}")
+
             # ── gen_security_report: 自动存入制品 ──
             if tool_name == "gen_security_report":
                 try:
@@ -3288,17 +3319,10 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
         "- `evidence_snapshot(target)` → 扫描结果 SHA256 固化+时间戳。\\n"
         "- `retest_compare(target)` → 对比最近两次扫描的端口变化和风险变化。\\n"
         "\\n"
-        "### 规则2：检测后，自动选最优模板出报告\\n"
-        "完成扫描后，**必须调用** `gen_security_report(target, template)` 输出 Markdown 报告。\\n"
-        "**不要问用户'用哪个模板'，也不要推荐让用户选。你自己根据扫描结果选择最合适的模板，在调用时填写 template 参数。**\\n"
-        "模板选择逻辑：\\n"
-        "- 一般安全检查 → `standard`（标准安全检测报告）\\n"
-        "- 面向客户汇报 → `customer`（客户汇总报告）\\n"
-        "- 安恒设备/明鉴格式 → `anheng-report`\\n"
-        "- 绿盟设备格式 → `nsfocus-report`\\n"
-        "- Web应用检测 → `chaitin-report`（长亭牧云格式）\\n"
-        "- 渗透测试场景 → `vackbot-report`（墨云VackBot格式）\\n"
-        "在回复中**说明你选择了哪个模板以及选择的理由**（例如：'本次采用 standard 模板，适用通用安全检测场景'）。\\n"
+        "### 规则2：双层报告机制 — 单工具自动存简报 + 全部完成后问用户要不要完整报告\\n"
+        "每个工具执行后，系统会自动将该工具的检测结果存入制品面板（无需你操作）。\\n"
+        "所有检测工具执行完毕后，**你必须问用户**是否需要生成一份完整的汇总报告。\\n"
+        "如果用户同意，调用 `gen_security_report(target, template=\"customer\")` 生成多源汇总报告，存入制品。\\n"
         "\\n"
         "### 规则3：全自动编排 — 通用场景策略\\n"
         "不管用户怎么说（检查/扫描/检测/安全/等保/合规/漏洞/查一下），只要是安全类请求，你都按以下策略决策：\\n"
@@ -3318,7 +3342,7 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
         "- 只要等保 → `config_audit(target, vendor=\"绿盟\")`\\n"
         "- 只要报告 → `gen_security_report(target, template=\"standard\")`\\n"
         "- 扫描网段 → `ping_sweep(subnet)` 发现存活，再对每个存活IP执行 port_scan\\n"
-        "**不要问用户'要不要出报告'，直接出。不要每一步都停下来等确认，你是有能力编排的 Agent。**\\n"
+        "**不要每一步都停下来等确认，你是有能力编排的 Agent。所有工具执行完后，问用户是否需要生成完整汇总报告。**\\n"
         "\\n"
         "### 规则3.1：禁止输出纯文字代替工具调用（硬性指令）\\n"
         "**当用户请求安全检测时，你的第一轮回复必须包含至少一个工具调用（tool_call）。**\\n"

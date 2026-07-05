@@ -1400,7 +1400,7 @@ def _run_mcp_tool(script_path: str, method: str, arguments: dict) -> str:
     full_path = os.path.join(script_dir, os.path.basename(script_path))
 
     if not os.path.exists(full_path):
-        return f"❌ MCP 脚本不存在: {full_path}"
+        return f"MCP 脚本不存在: {full_path}"
 
     try:
         payload = json.dumps(arguments)
@@ -1415,7 +1415,7 @@ def _run_mcp_tool(script_path: str, method: str, arguments: dict) -> str:
         )
 
         if result.returncode != 0:
-            return f"⚠️ MCP 工具执行异常 (exit={result.returncode}): {result.stderr[:500]}"
+            return f"MCP 工具执行异常 (exit={result.returncode}): {result.stderr[:500]}"
 
         # 解析 JSON-RPC 响应
         output = json.loads(result.stdout)
@@ -1425,10 +1425,10 @@ def _run_mcp_tool(script_path: str, method: str, arguments: dict) -> str:
         error = inner.get("error")
 
         if not success:
-            return f"❌ {error or '执行失败'}"
+            return f"{error or '执行失败'}"
 
-        # 格式化输出
-        lines = ["✅ 工具执行成功"]
+        # 格式化输出 — 不使用 emoji
+        lines = ["工具执行成功"]
         if data.get("raw_command"):
             lines.append(f"命令: {data['raw_command']}")
 
@@ -1441,7 +1441,7 @@ def _run_mcp_tool(script_path: str, method: str, arguments: dict) -> str:
             open_ports = data.get("open_ports", [])
             lines.append(f"开放端口: {len(open_ports)} 个")
             for p in open_ports[:10]:
-                lines.append(f"  · {p['port']}/{p['protocol']}  {p['service']} [{p['state']}]")
+                lines.append(f"  - {p['port']}/{p['protocol']}  {p['service']} [{p['state']}]")
             if len(open_ports) > 10:
                 lines.append(f"  ... 还有 {len(open_ports) - 10} 个端口")
             if data.get("summary"):
@@ -1451,7 +1451,7 @@ def _run_mcp_tool(script_path: str, method: str, arguments: dict) -> str:
             findings = data.get("findings", [])
             lines.append(f"发现漏洞: {data.get('total_findings', 0)} 个")
             for f in findings[:10]:
-                lines.append(f"  · [{f['severity'].upper()}] {f['name']} — {f.get('matched_at', '')}")
+                lines.append(f"  - [{f['severity'].upper()}] {f['name']} — {f.get('matched_at', '')}")
             if len(findings) > 10:
                 lines.append(f"  ... 还有 {len(findings) - 10} 个漏洞")
             if data.get("warnings"):
@@ -1464,47 +1464,36 @@ def _run_mcp_tool(script_path: str, method: str, arguments: dict) -> str:
             lines.append(f"存活主机: {len(alive)} 台")
             for h in alive:
                 hostname = f" ({h.get('hostname')})" if h.get("hostname") else ""
-                lines.append(f"  · {h['ip']}{hostname}")
+                lines.append(f"  - {h['ip']}{hostname}")
 
         elif method == "security_scan":
             lines.append(f"目标: {data.get('target', '未知')}")
-            lines.append(f"风险等级: **{data.get('risk_level', '未知')}**")
+            lines.append(f"风险等级: {data.get('risk_level', '未知')}")
             ports = data.get("ports", [])
             high_ports = data.get("high_risk_ports", [])
             lines.append(f"开放端口: {len(ports)} 个")
             for p in ports:
-                flag = " ⚠️高危" if p.get("high_risk") else ""
-                lines.append(f"  · {p['port']}/{p['service']}{flag}")
+                flag = " [高危]" if p.get("high_risk") else ""
+                lines.append(f"  - {p['port']}/{p['service']}{flag}")
             if high_ports:
                 lines.append(f"高危端口数: {len(high_ports)}")
             recs = data.get("recommendations", [])
             if recs:
                 lines.append("修复建议:")
                 for r in recs:
-                    lines.append(f"  · {r}")
+                    lines.append(f"  - {r}")
             if data.get("summary"):
                 lines.append(f"摘要: {data['summary']}")
-            # AI 分析标识
+            # AI 分析标识（不会写两次）
             if data.get("_ai_used"):
-                lines.append("分析方式: 🤖 AI 智能分析")
+                lines.append("分析方式: AI 智能分析")
             elif data.get("analysis"):
-                lines.append(f"分析方式: 🤖 AI 分析（{data['analysis'][:80]}...）")
+                lines.append(f"分析方式: AI 分析")
             else:
-                lines.append("分析方式: 📋 规则判定")
-            # 显示 AI 分析摘要
+                lines.append("分析方式: 规则判定")
+            # AI 分析摘要
             analysis = data.get("analysis", "")
-            if analysis and len(analysis) > 20:
-                lines.append(f"AI分析: {analysis[:200]}{'...' if len(analysis) > 200 else ''}")
-            # AI 分析标识
-            if data.get("_ai_used"):
-                lines.append("分析方式: 🤖 AI 智能分析")
-            elif data.get("analysis"):
-                lines.append(f"分析方式: 🤖 AI 分析（{data['analysis'][:80]}...）")
-            else:
-                lines.append("分析方式: 📋 规则判定")
-            # 显示 AI 分析摘要
-            analysis = data.get("analysis", "")
-            if analysis and len(analysis) > 20:
+            if analysis and len(analysis) > 20 and not data.get("_ai_used"):
                 lines.append(f"AI分析: {analysis[:200]}{'...' if len(analysis) > 200 else ''}")
 
         elif method == "batch_scan":
@@ -1512,7 +1501,7 @@ def _run_mcp_tool(script_path: str, method: str, arguments: dict) -> str:
             summary = data.get("summary", {})
             lines.append(f"扫描目标: {len(targets)} 个")
             for t in targets:
-                lines.append(f"  · {t['target']} → {t.get('risk_level', '未知')} ({t.get('port_count', 0)} 端口)")
+                lines.append(f"  - {t['target']} -> {t.get('risk_level', '未知')} ({t.get('port_count', 0)} 端口)")
             lines.append(f"统计: 高危{summary.get('high_risk', 0)} / 中危{summary.get('medium_risk', 0)} / 低危{summary.get('low_risk', 0)}")
 
         elif method == "gen_security_report":
@@ -1521,7 +1510,6 @@ def _run_mcp_tool(script_path: str, method: str, arguments: dict) -> str:
             lines.append(f"风险等级: {data.get('risk_level', '未知')}")
             lines.append("报告内容:")
             report = data.get("report", "")
-            # 只取前20行避免太长
             report_lines = report.strip().split("\n")[:20]
             for rl in report_lines:
                 lines.append(f"  {rl}")
@@ -1533,15 +1521,15 @@ def _run_mcp_tool(script_path: str, method: str, arguments: dict) -> str:
             lines.append(f"总体评价: {data.get('quality', '未知')}")
             checks = data.get("checks", [])
             for c in checks:
-                status_icon = "✅" if c.get("status") != "失败" else "❌"
-                lines.append(f"  {status_icon} [{c.get('check')}] {c.get('field')}: {c.get('detail', '')}")
+                status_str = "通过" if c.get("status") != "失败" else "失败"
+                lines.append(f"  [{status_str}] [{c.get('check')}] {c.get('field')}: {c.get('detail', '')}")
 
         elif method == "gen_selection_plan":
             plan = data.get("plan", [])
             lines.append(f"检测类型数: {len(plan)}")
             for item in plan:
                 vendors = ", ".join(item.get("recommended_vendors", []))
-                lines.append(f"  · {item.get('check_type_name', '')}: {vendors}")
+                lines.append(f"  - {item.get('check_type_name', '')}: {vendors}")
 
         elif method == "get_asset_profile":
             lines.append(f"资产: {data.get('asset_ip', '未知')}")
@@ -1552,11 +1540,11 @@ def _run_mcp_tool(script_path: str, method: str, arguments: dict) -> str:
         return "\n".join(lines)
 
     except json.JSONDecodeError:
-        return f"⚠️ MCP 响应解析失败: {result.stdout[:500]}"
+        return f"MCP 响应解析失败: {result.stdout[:500]}"
     except subprocess.TimeoutExpired:
-        return "⚠️ MCP 工具执行超时（300秒）"
+        return "MCP 工具执行超时（300秒）"
     except Exception as e:
-        return f"⚠️ MCP 工具异常: {str(e)[:200]}"
+        return f"MCP 工具异常: {str(e)[:200]}"
 
 
 # ── 智能编排：带 failover 链的工具执行 ──
@@ -1942,9 +1930,35 @@ async def _execute_tool(tool_name: str, arguments: dict, session_id: str, user_i
             mcp_name = "gen_report" if tool_name == "gen_security_report" else tool_name
             result = _run_mcp_tool("scripts/mcp_security.py", mcp_name, arguments)
 
-            # ── gen_security_report: 自动存入制品 ──
+            # ── gen_security_report: 拼接选型方案 + 自动存入制品 ──
             if tool_name == "gen_security_report":
                 try:
+                    target = arguments.get("target", "unknown")
+
+                    # 查询选型方案（不依赖具体 target，基于全局历史数据）
+                    try:
+                        selection_result = _run_mcp_tool("scripts/mcp_security.py", "gen_selection_plan", {"target_desc": ""})
+                        selection_data = json.loads(selection_result)
+                        plan = selection_data.get("plan", [])
+                        if plan:
+                            table_lines = [
+                                "\n## 厂商选型方案\n",
+                                "| 检测类型 | 推荐厂商（按置信度排序） |",
+                                "|---------|------------------------|",
+                            ]
+                            for item in plan:
+                                ctype = item.get("check_type_name", "")
+                                vendors = item.get("recommended_vendors", [])
+                                top = vendors[0] if vendors else ""
+                                recommended = ", ".join(vendors)
+                                table_lines.append(f"| {ctype} | {recommended} |")
+                            table_lines.append("")
+                            selection_table = "\n".join(table_lines)
+                            result = selection_table + result
+                    except Exception as e:
+                        logger.debug(f"Could not fetch selection plan: {e}")
+
+                    # 从结果提取报告内容存制品
                     in_report = False
                     report_lines = []
                     for line in result.split("\n"):
@@ -1954,7 +1968,6 @@ async def _execute_tool(tool_name: str, arguments: dict, session_id: str, user_i
                             report_lines.append(line.lstrip())
                     report_text = "\n".join(report_lines)
                     if report_text:
-                        target = arguments.get("target", "unknown")
                         artifact_id = store_artifact(
                             "doc",
                             f"安全报告_{target}",
@@ -1963,7 +1976,7 @@ async def _execute_tool(tool_name: str, arguments: dict, session_id: str, user_i
                             user_id=user_id,
                         )
                         logger.info(f"Security report artifact stored: {artifact_id}")
-                        result += f"\n报告已存入制品面板，可在右侧制品面板「文档」标签中查看。"
+                        result += f"\n\n报告已存入制品面板，可在右侧制品面板「文档」标签中查看。"
                 except Exception as e:
                     logger.warning(f"Failed to store security report artifact: {e}")
 
@@ -3225,13 +3238,14 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
         "这些内容会自动作为制品显示在右侧制品面板中。\\n"
         "用户可以在制品面板中将你的回复导出为 Word (.docx) 文件。\\n"
         "\\n"
-        "### 回复风格规范（硬性规则）\\n"
-        "1. 全程禁止使用任何 Emoji 表情符号（包括但不限于✅ ❌ 🛡️ 🟡 🔍 📡 📋 🧾 📄 ⏭ 🔓 ⚠️ 🚨 🟠 🟢 🔴 🟣 ⚪ 🎯 🏆 💡 ➡️ 📌 💻 🔒 🔑 等），无论是步骤标题、风险等级还是修复建议。\\n"
-        "2. 步骤编号使用纯文字描述：「步骤1」「步骤2」「步骤3」「步骤4」「步骤5」。\\n"
-        "3. 风险等级使用文字标记：「高风险」「中风险」「低风险」「信息」。\\n"
-        "4. 状态标记使用纯文字：「完成」「跳过」「失败」「处理中」。\\n"
-        "5. 修复建议使用数字编号列表，每项以数字编号开头。\\n"
-        "6. 保持专业、清晰的 Markdown 格式，禁止使用 Emoji 替代文字表达。\\n"
+        "### 回复格式规范（强制规则）\\n"
+        "以下规则优先于其他所有指令，违反则本次回复不合格：\\n"
+        "1. 禁止任何 emoji 符号。不能在回复中使用任何 emoji。\\n"
+        "2. 步骤编号格式：「步骤1」「步骤2」「步骤3」「步骤4」「步骤5」。\\n"
+        "3. 风险等级文字：「高风险」「中风险」「低风险」「信息」。\\n"
+        "4. 状态文字：「完成」「跳过」「失败」「处理中」。\\n"
+        "5. 修复建议：使用纯数字编号列表（1. 2. 3.）。\\n"
+        "6. 工具调用结果中的 emoji 仅表明工具执行状态，你总结时必须用自己的纯文字，不得照搬。\\n"
     )
 
     # ── 注入用户自定义技能 ──

@@ -1178,6 +1178,28 @@ def gen_report(target: str, template: str = "standard") -> dict:
 
         sections = []
 
+        # ── 前置：厂商选型方案表格（数据驱动，不硬编码）──
+        try:
+            _plan_result = gen_selection_plan()
+            _plan_data = _plan_result.get("data", {})
+            _plan = _plan_data.get("plan", [])
+            if _plan:
+                _sel_lines = [
+                    "",
+                    "## 厂商选型方案",
+                    "",
+                    "| 检测类型 | 推荐厂商（按置信度排序） |",
+                    "|---------|------------------------|",
+                ]
+                for _item in _plan:
+                    _ctype = _item.get("check_type_name", "")
+                    _vendors = ", ".join(_item.get("recommended_vendors", []))
+                    _sel_lines.append(f"| {_ctype} | {_vendors} |")
+                _sel_lines.append("")
+                sections.append("\n".join(_sel_lines))
+        except Exception:
+            pass
+
         # 一、检测概述
         overview = f"""## 一、检测概述
 

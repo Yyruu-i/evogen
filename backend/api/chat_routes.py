@@ -1930,33 +1930,10 @@ async def _execute_tool(tool_name: str, arguments: dict, session_id: str, user_i
             mcp_name = "gen_report" if tool_name == "gen_security_report" else tool_name
             result = _run_mcp_tool("scripts/mcp_security.py", mcp_name, arguments)
 
-            # ── gen_security_report: 拼接选型方案 + 自动存入制品 ──
+            # ── gen_security_report: 自动存入制品 ──
             if tool_name == "gen_security_report":
                 try:
                     target = arguments.get("target", "unknown")
-
-                    # 查询选型方案（不依赖具体 target，基于全局历史数据）
-                    try:
-                        selection_result = _run_mcp_tool("scripts/mcp_security.py", "gen_selection_plan", {"target_desc": ""})
-                        selection_data = json.loads(selection_result)
-                        plan = selection_data.get("plan", [])
-                        if plan:
-                            table_lines = [
-                                "\n## 厂商选型方案\n",
-                                "| 检测类型 | 推荐厂商（按置信度排序） |",
-                                "|---------|------------------------|",
-                            ]
-                            for item in plan:
-                                ctype = item.get("check_type_name", "")
-                                vendors = item.get("recommended_vendors", [])
-                                top = vendors[0] if vendors else ""
-                                recommended = ", ".join(vendors)
-                                table_lines.append(f"| {ctype} | {recommended} |")
-                            table_lines.append("")
-                            selection_table = "\n".join(table_lines)
-                            result = selection_table + result
-                    except Exception as e:
-                        logger.debug(f"Could not fetch selection plan: {e}")
 
                     # 从结果提取报告内容存制品
                     in_report = False

@@ -1941,6 +1941,32 @@ async def _execute_tool(tool_name: str, arguments: dict, session_id: str, user_i
             # 注意: gen_report 在 gen_security_report 的路上, gen_security_report 映射到 gen_report
             mcp_name = "gen_report" if tool_name == "gen_security_report" else tool_name
             result = _run_mcp_tool("scripts/mcp_security.py", mcp_name, arguments)
+
+            # ── gen_security_report: 自动存入制品 ──
+            if tool_name == "gen_security_report":
+                try:
+                    in_report = False
+                    report_lines = []
+                    for line in result.split("\n"):
+                        if line.strip().startswith("#"):
+                            in_report = True
+                        if in_report:
+                            report_lines.append(line.lstrip())
+                    report_text = "\n".join(report_lines)
+                    if report_text:
+                        target = arguments.get("target", "unknown")
+                        artifact_id = store_artifact(
+                            "doc",
+                            f"安全报告_{target}",
+                            report_text,
+                            session_id=session_id,
+                            user_id=user_id,
+                        )
+                        logger.info(f"Security report artifact stored: {artifact_id}")
+                        result += f"\n报告已存入制品面板，可在右侧制品面板「文档」标签中查看。"
+                except Exception as e:
+                    logger.warning(f"Failed to store security report artifact: {e}")
+
             return result
 
         # ── 报告生成 ──

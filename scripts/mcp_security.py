@@ -29,6 +29,19 @@ from pathlib import Path
 DATA_DIR = Path.home() / ".hermes" / ".sec-inspect-data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA_DIR / "security_inspection.db"
+PROGRESS_DIR = DATA_DIR / "_progress"
+PROGRESS_DIR.mkdir(exist_ok=True)
+
+# DeepSeek API（用于 AI 风险分析，可选）
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
+_AI_CLIENT = None
+if DEEPSEEK_API_KEY:
+    try:
+        from openai import OpenAI
+        _AI_CLIENT = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL)
+    except ImportError:
+        _AI_CLIENT = None
 
 # TOP 500 常见端口（含安全关注端口）
 _COMMON_PORTS_DEF = """21:FTP,22:SSH,23:Telnet,25:SMTP,53:DNS,69:TFTP,80:HTTP,81:HTTP-Alt,88:Kerberos,110:POP3,111:RPCbind,123:NTP,135:RPC,137:NetBIOS-NS,139:NetBIOS-SSN,143:IMAP,161:SNMP,162:SNMP-Trap,179:BGP,389:LDAP,443:HTTPS,445:SMB,465:SMTPS,500:ISAKMP,502:Modbus,512:rexec,513:rlogin,514:syslog,515:printer,520:RIP,521:RIPng,523:IPsec,554:RTSP,587:SMTP-Sub,623:IPMI,631:IPP,636:LDAPS,646:LDP,873:rsync,902:VMware,989:FTPS-Data,990:FTPS,993:IMAPS,995:POP3S,1025:RPC-NFS,1080:SOCKS,1099:RMI,1194:OpenVPN,1241:Nessus,1352:Lotus-Notes,1414:MQ,1433:MSSQL,1434:MSSQL-Mon,1521:Oracle,1720:H.323,1723:PPTP,2049:NFS,2181:ZooKeeper,2222:SSH-Alt,2375:Docker,2376:Docker-TLS,2379:etcd,2424:OrientDB,2483:Oracle-Ora,2484:Ora-TLS,3000:Grafana,3306:MySQL,3389:RDP,3478:STUN,4000:Node-Debug,4040:SparkUI,4190:ManageSieve,4243:Docker,4369:Erlang-Port,4444:Metasploit,4560:Logstash,4567:Sinatra,4600:Log4j-Socket,4848:GlassFish,5000:Flask,5001:UPnP,5004:RTP,5037:ADB,5044:Logstash-Beats,5050:Marathon,5060:SIP,5061:SIPS,5222:XMPP,5223:XMPP-SSL,5353:mDNS,5432:PostgreSQL,5555:ADB-Alt,5601:Kibana,5631:pcAnywhere,5672:RabbitMQ,5850:VNC,5900:VNC,5901:VNC-1,5984:CouchDB,5985:WinRM-HTTP,5986:WinRM-HTTPS,6000:X11,6001:X11-1,6002:X11-2,6003:X11-3,6004:X11-4,6005:X11-5,6082:VNC-Alt,6379:Redis,6443:K8s-API-SSL,6580:VNC-Alt,7001:WebLogic,7002:WebLogic-SSL,7070:Genie-Alt,7071:Zimbra,7199:Cassandra-JMX,7443:HTTPS-Alt,7474:Neo4j,7547:TR-069,7741:Tomcat-Alt,7777:LimeChat,7778:Tomcat-Alt2,7890:Clash,8000:HTTP-Alt,8001:HTTP-Alt2,8005:Tomcat-Shutdown,8008:HTTP-Alt8,8009:AJP13,8010:HTTP-Alt9,8042:YARN-RM,8069:Odoo,8080:HTTP-Proxy,8081:HTTP-Monitor,8082:HTTP-Alt12,8086:HTTP-Alt16,8088:Hadoop-YARN,8089:Splunkd,8090:HTTP-Alt18,8091:Couchbase-Web,8092:Couchbase-API,8100:HTTP-Alt19,8123:Polipo,8140:Puppet,8161:ActiveMQ-Web,8172:MS-Deploy,8200:Vault-UI,8222:VMware-Tools,8243:HTTPS-Alt20,8280:HTTP-Alt20,8300:Consul,8301:Consul-LAN,8302:Consul-WAN,8332:Bitcoin,8333:Bitcoin-Test,8403:CommServer,8443:HTTPS-Alt,8444:Bitcoin-Alt,8500:Consul-DNS,8530:WSUS,8531:WSUS-SSL,8545:Ethereum-RPC,8600:Consul-HTTP,8649:Ganglia,8686:Solr,8761:Eureka,8786:Dask-Scheduler,8787:Dask-Bokeh,8800:HTTP-Alt22,8834:Nessus,8843:HTTPS-Alt23,8880:HTTP-Alt23,8883:MQTT-SSL,8888:HTTP-Alt25,8889:HTTP-Alt26,8983:Solr,9000:PHP-FPM,9001:Hadoop-NameNode,9002:Hadoop-JT,9042:Cassandra-CQL,9043:WebSphere-SSL,9050:Tor,9060:WebSphere,9080:WebSphere-HTTP,9090:HTTP-Alt,9091:HTTP-Alt,9092:Kafka,9093:Kafka-SSL,9100:JetDirect,9151:Tor-Control,9160:Cassandra-Thrift,9200:Elasticsearch,9201:ES-Alt,9300:ES-Transport,9418:Git,9443:HTTPS-Alt,9500:HTTP-Alt,9600:OmniVision,9870:Hadoop-NN-UI,9871:Hadoop-NN-UI-SSL,9990:WildFly,9993:ZeroTier,9997:Splunk-Idx,10000:Webmin,10050:Zabbix-Agent,10051:Zabbix-Server,10113:NetIQ,10114:NetIQ,11211:Memcached,11214:Memcached-SSL,12345:NetBus,14265:IOTA,16010:HBase-Master,16020:HBase-Region,16379:Redis-Alt,16380:Redis-Alt2,16509:OpenFlow,17000:HTTP-Alt,18080:HTTP-Alt,18081:HTTP-Alt,18082:HTTP-Alt,18100:HTTP-Alt,19000:HTTP-Alt,19100:HTTP-Alt,20000:HTTP-Alt,21000:HTTP-Alt,22000:HTTP-Alt,22222:HTTP-Alt,23000:HTTP-Alt,24000:HTTP-Alt,25000:HTTP-Alt,25565:Minecraft,26000:HTTP-Alt,26257:CockroachDB,27015:HLDS,27016:HLDS-Alt,27017:MongoDB,27018:MongoDB-Alt,27019:MongoDB-Alt2,28017:MongoDB-HTTP,30000:HTTP-Alt,31000:HTTP-Alt,31337:BackOrifice,32000:HTTP-Alt,32400:Plex,32764:Router-Backdoor,32768:HTTP-Alt,33434:traceroute,35000:HTTP-Alt,38080:HTTP-Alt,40000:HTTP-Alt,41000:HTTP-Alt,42000:HTTP-Alt,43000:HTTP-Alt,44000:HTTP-Alt,44818:EtherNet-IP,45000:HTTP-Alt,46000:HTTP-Alt,47000:HTTP-Alt,48000:HTTP-Alt,49000:HTTP-Alt,49152:Win-RPC,49153:Win-RPC,49154:Win-RPC,49155:Win-RPC,49156:Win-RPC,49157:Win-RPC,49158:Win-RPC,49159:Win-RPC,49160:Win-RPC,49161:Win-RPC,49162:Win-RPC,49163:Win-RPC,49164:Win-RPC,49165:Win-RPC,49166:Win-RPC,49167:Win-RPC,49168:Win-RPC,49169:Win-RPC,49170:Win-RPC,49171:Win-RPC,49172:Win-RPC,50000:DB2,50010:Hadoop-DataNode,50020:Hadoop-DN-IPC,50030:Hadoop-JT-UI,50060:Hadoop-TT-UI,50070:Hadoop-NN-UI,50075:Hadoop-DN-UI,50090:Hadoop-SNN-UI,51000:HTTP-Alt,52000:HTTP-Alt,53000:HTTP-Alt,54000:HTTP-Alt,55000:HTTP-Alt,56000:HTTP-Alt,57000:HTTP-Alt,58000:HTTP-Alt,59000:HTTP-Alt,60000:HTTP-Alt,61000:HTTP-Alt,61616:ActiveMQ,62000:HTTP-Alt,63000:HTTP-Alt,64000:HTTP-Alt,65000:HTTP-Alt,65389:HTTP-Alt"""
@@ -127,6 +140,33 @@ def save_record(target, result, vendor=""):
     conn.close()
 
 
+# ── 进度跟踪（文件级状态记录，供前端轮询）──
+
+def _progress_id(target: str) -> str:
+    return target.replace(".", "_").replace(":", "_")
+
+def write_progress(target: str, stage: str, detail: str = "", percent: int = 0):
+    """写入当前扫描进度。"""
+    data = {"target": target, "stage": stage, "detail": detail,
+            "percent": percent, "time": datetime.now().isoformat()}
+    with open(PROGRESS_DIR / f"{_progress_id(target)}.json", "w") as f:
+        json.dump(data, f, ensure_ascii=False)
+
+def read_progress(target: str) -> dict:
+    """读取当前扫描进度。"""
+    fpath = PROGRESS_DIR / f"{_progress_id(target)}.json"
+    if fpath.exists():
+        with open(fpath) as f:
+            return json.load(f)
+    return {"stage": "idle", "detail": "", "percent": 0}
+
+def clear_progress(target: str):
+    """清除进度记录。"""
+    fpath = PROGRESS_DIR / f"{_progress_id(target)}.json"
+    if fpath.exists():
+        fpath.unlink()
+
+
 def ping_sweep(subnet: str) -> dict:
     """ICMP 存活探测 — 使用 nmap ping sweep 发现存活主机.
 
@@ -191,13 +231,14 @@ def ping_sweep(subnet: str) -> dict:
         return {"success": False, "data": {}, "error": f"ping_sweep 失败: {str(e)[:200]}"}
 
 
-def port_scan_target(target: str, ports: str = "", enable_service_detect: bool = True) -> dict:
+def port_scan_target(target: str, ports: str = "", enable_service_detect: bool = True, progress_target: str = "") -> dict:
     """对单个目标执行端口扫描（TOP 500 端口 + nmap -sV 服务识别）.
 
     Args:
         target: 目标 IP
         ports: 逗号分隔的端口列表（为空则扫所有常见端口）
         enable_service_detect: 是否调用 nmap -sV 做服务版本识别
+        progress_target: 进度跟踪目标IP（为空则不写进度）
 
     Returns:
         扫描结果 dict
@@ -208,7 +249,8 @@ def port_scan_target(target: str, ports: str = "", enable_service_detect: bool =
     else:
         port_list = list(COMMON_PORTS.keys())
 
-    for port in port_list:
+    total = len(port_list)
+    for idx, port in enumerate(port_list):
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(0.8)
@@ -219,6 +261,10 @@ def port_scan_target(target: str, ports: str = "", enable_service_detect: bool =
             open_ports.append({"port": port, "service": service, "status": "open", "high_risk": is_high_risk})
         except:
             pass
+        # 每扫描 50 个端口或最后 5 个端口时更新一次进度，避免文件写太频繁
+        if progress_target and (idx % 50 == 0 or idx >= total - 5):
+            pct = int((idx + 1) / total * 100) if total else 0
+            write_progress(progress_target, "scanning", f"扫描端口 {port}/{COMMON_PORTS.get(port, '?')}", percent=pct)
 
     # 服务版本识别（nmap -sV）
     service_versions = {}
@@ -299,7 +345,7 @@ def security_scan(target: str, vendor: str = "", scan_type: str = "port_scan", e
 
 
 def _do_single_scan(target: str, vendor: str, scan_type: str) -> dict:
-    """执行单次安全检查.
+    """执行单次安全检查（支持 AI 风险分析）.
 
     Args:
         target: 目标 IP
@@ -315,11 +361,14 @@ def _do_single_scan(target: str, vendor: str, scan_type: str) -> dict:
             "target": target, "scan_time": now, "scan_type": scan_type,
             "vendor": vendor, "ports": [], "high_risk_ports": [],
             "risk_level": "unknown", "summary": "", "recommendations": [],
-            "evidence": None
+            "analysis": "", "evidence": None
         }
 
-        # 执行端口扫描 + 服务识别
-        scan_result = port_scan_target(target, enable_service_detect=True)
+        # 进度：开始扫描
+        write_progress(target, "init", "初始化扫描", percent=0)
+
+        # 执行端口扫描 + 服务识别（带进度跟踪）
+        scan_result = port_scan_target(target, enable_service_detect=True, progress_target=target)
         result["ports"] = scan_result.get("ports", [])
         result["high_risk_ports"] = scan_result.get("high_risk_ports", [])
 
@@ -327,44 +376,102 @@ def _do_single_scan(target: str, vendor: str, scan_type: str) -> dict:
             result["risk_level"] = "低危"
             result["summary"] = f"目标 {target} 未发现开放常见端口，安全状态良好。"
             result["recommendations"] = ["保持当前安全配置", "定期执行安全检查"]
+            # 无端口不调 AI
+            write_progress(target, "done", "扫描完成，未发现开放端口", percent=100)
         else:
-            high_ports = result["high_risk_ports"]
-            if len(high_ports) >= 3:
-                result["risk_level"] = "高危"
-            elif len(high_ports) >= 1:
-                result["risk_level"] = "中危"
-            elif len(result["ports"]) >= 5:
-                result["risk_level"] = "中危"
-            else:
-                result["risk_level"] = "低危"
+            # 进度：端口扫描完成，开始 AI/规则分析
+            write_progress(target, "analyzing", "安全分析中...", percent=85)
 
-            # 详细端口描述（含服务版本）
-            port_lines = []
-            for p in result["ports"]:
-                ver = f"({p.get('version', '')})" if p.get("version") else ""
-                flag = " ⚠️高危" if p.get("high_risk") else ""
-                port_lines.append(f"{p['port']}/{p.get('service_name', p['service'])}{ver}{flag}")
-            port_desc = ", ".join(port_lines)
-            result["summary"] = f"发现 {len(result['ports'])} 个开放端口: {port_desc}"
-            if high_ports:
-                high_desc = ", ".join([f"{p['port']}({p['service']})" for p in high_ports])
-                result["summary"] += f"\n⚠️ 高危端口: {high_desc}"
+            # ── AI 风险分析（可选，有 key 且 client 可用时才调）──
+            ai_used = False
+            if _AI_CLIENT:
+                try:
+                    port_desc = ", ".join(
+                        [f"{p['port']}({p.get('service_name', p['service'])})" for p in result["ports"]]
+                    )
+                    high_desc = ""
+                    if result["high_risk_ports"]:
+                        high_desc = "\n高危端口: " + ", ".join(
+                            [f"{p['port']}({p['service']})" for p in result["high_risk_ports"]]
+                        )
 
-            # 修复建议
-            recs = []
-            for p in high_ports:
-                recs.append(f"高危端口 {p['port']}({p['service']}) 应立即检查是否必要，限制访问来源IP")
-            if len(result["ports"]) > 10:
-                recs.append("开放端口过多，建议梳理并关闭非必要端口")
-            recs.append("确保所有服务已安装最新安全补丁")
-            recs.append("定期执行漏洞扫描")
-            result["recommendations"] = recs
+                    prompt = f"""作为一个网络安全专家，分析以下端口扫描结果，输出结构化的安全评估。
+
+目标：{target}
+开放端口：{port_desc}{high_desc}
+
+请按以下 JSON 格式输出，不要加 markdown 代码块标记：
+{{
+    "risk_level": "高危"或"中危"或"低危",
+    "analysis": "详细分析每个端口的安全风险（中文，200-500字）",
+    "recommendations": ["具体修复建议1", "建议2", "建议3"],
+    "summary": "一句话总结安全状况"
+}}"""
+
+                    resp = _AI_CLIENT.chat.completions.create(
+                        model=os.environ.get("DEEPSEEK_MODEL", "deepseek-chat"),
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=0.3,
+                        max_tokens=1500
+                    )
+                    content = resp.choices[0].message.content
+                    # 提取 JSON
+                    import re
+                    json_match = re.search(r'\{.*\}', content, re.DOTALL)
+                    if json_match:
+                        analysis = json.loads(json_match.group())
+                        result["risk_level"] = analysis.get("risk_level", result["risk_level"])
+                        result["analysis"] = analysis.get("analysis", "")
+                        result["recommendations"] = analysis.get("recommendations", result["recommendations"])
+                        result["summary"] = analysis.get("summary", content[:300])
+                        ai_used = True
+                except Exception:
+                    pass  # AI 失败则回退到规则判定
+
+            # ── 规则兜底（AI 不可用或失败时使用）──
+            if not ai_used:
+                high_ports = result["high_risk_ports"]
+                if len(high_ports) >= 3:
+                    result["risk_level"] = "高危"
+                elif len(high_ports) >= 1:
+                    result["risk_level"] = "中危"
+                elif len(result["ports"]) >= 5:
+                    result["risk_level"] = "中危"
+                else:
+                    result["risk_level"] = "低危"
+
+                # 详细端口描述
+                port_lines = []
+                for p in result["ports"]:
+                    ver = f"({p.get('version', '')})" if p.get("version") else ""
+                    flag = " ⚠️高危" if p.get("high_risk") else ""
+                    port_lines.append(f"{p['port']}/{p.get('service_name', p['service'])}{ver}{flag}")
+                port_desc = ", ".join(port_lines)
+                result["summary"] = f"发现 {len(result['ports'])} 个开放端口: {port_desc}"
+                if high_ports:
+                    high_desc = ", ".join([f"{p['port']}({p['service']})" for p in high_ports])
+                    result["summary"] += f"\n⚠️ 高危端口: {high_desc}"
+
+                # 修复建议
+                recs = []
+                for p in high_ports:
+                    recs.append(f"高危端口 {p['port']}({p['service']}) 应立即检查是否必要，限制访问来源IP")
+                if len(result["ports"]) > 10:
+                    recs.append("开放端口过多，建议梳理并关闭非必要端口")
+                recs.append("确保所有服务已安装最新安全补丁")
+                recs.append("定期执行漏洞扫描")
+                result["recommendations"] = recs
+
+            result["_ai_used"] = ai_used
+            write_progress(target, "done", "扫描完成", percent=100)
 
         # 保存记录
         save_record(target, result, vendor)
+        clear_progress(target)
 
         return {"success": True, "data": result, "error": None}
     except Exception as e:
+        clear_progress(target)
         return {"success": False, "data": {}, "error": f"扫描失败: {str(e)[:200]}"}
 
 
@@ -1106,6 +1213,16 @@ def gen_report(target: str, template: str = "standard") -> dict:
             sections.append("""## 二、高危漏洞清单
 
 未发现高危漏洞。\n""")
+
+        # ── AI 安全分析（有 analysis 数据的记录才出）──
+        ai_section = ""
+        for entry in records:
+            analysis = entry["record"].get("analysis", "")
+            if analysis and len(analysis) > 20:
+                vendor_label = entry["vendor"] or "安全检查"
+                ai_section += f"\n**{vendor_label} AI 分析：**\n\n{analysis}\n\n"
+        if ai_section:
+            sections.append("## AI 安全分析\n\n" + ai_section.strip())
 
         # 三、中危漏洞清单（有数据才出）
         if med_ports:

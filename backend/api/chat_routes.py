@@ -1480,6 +1480,17 @@ def _run_mcp_tool(script_path: str, method: str, arguments: dict) -> str:
                     lines.append(f"  · {r}")
             if data.get("summary"):
                 lines.append(f"摘要: {data['summary']}")
+            # AI 分析标识
+            if data.get("_ai_used"):
+                lines.append("分析方式: 🤖 AI 智能分析")
+            elif data.get("analysis"):
+                lines.append(f"分析方式: 🤖 AI 分析（{data['analysis'][:80]}...）")
+            else:
+                lines.append("分析方式: 📋 规则判定")
+            # 显示 AI 分析摘要
+            analysis = data.get("analysis", "")
+            if analysis and len(analysis) > 20:
+                lines.append(f"AI分析: {analysis[:200]}{'...' if len(analysis) > 200 else ''}")
 
         elif method == "batch_scan":
             targets = data.get("targets", [])

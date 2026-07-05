@@ -33,6 +33,7 @@ import { SettingsModelsPage } from '@/pages/settings-models';
 import { SettingsPlatformsPage } from '@/pages/settings-platforms';
 import { SettingsSystemPage } from '@/pages/settings-system';
 import { StatsPage } from '@/pages/stats';
+import { ExpertListPage } from '@/pages/experts';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -77,7 +78,8 @@ function AppRoutes() {
         {/* Chat */}
         <Route path="chat" element={<ChatPage />} />
         <Route path="chat/:sessionId" element={<ChatPage />} />
-
+        <Route path="experts" element={<ExpertListPage />} />
+        <Route path="experts/:expertId/chat" element={<ChatPage />} />
         {/* Memory */}
         <Route path="memory" element={<MemoryPage />}>
           <Route index element={<Navigate to="list" replace />} />
@@ -121,6 +123,9 @@ function AppRoutes() {
 
         {/* Templates */}
         <Route path="templates" element={<TemplatesPage />} />
+
+        {/* Experts */}
+        <Route path="experts" element={<ExpertListPage />} />
 
         {/* Settings */}
         <Route path="settings" element={<SettingsPage />}>

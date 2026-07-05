@@ -20,6 +20,7 @@ import {
   LogOut,
   BarChartBig,
   FileText,
+  Bot,
 } from 'lucide-react';
 import { ThemeToggle } from '@/components/shared/theme-toggle';
 import { useSessions } from '@/hooks/use-sessions';
@@ -74,6 +75,7 @@ export function Sidebar() {
       items: [
         { to: '/chat', icon: MessageSquare, label: '对话' },
         { to: '/persona/attributes', icon: UserCircle, label: '人格' },
+        { to: '/experts', icon: Bot, label: '专家' },
       ],
     },
     {

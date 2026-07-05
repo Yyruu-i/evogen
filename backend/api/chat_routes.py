@@ -1128,6 +1128,7 @@ async def _generate_summary(original_message: str, subtask_results: str) -> str:
 class ChatRequest(BaseModel):
     message: str
     session: str | None = None
+    expert_id: str | None = None
 
 
 def _utcnow_iso() -> str:
@@ -1273,21 +1274,43 @@ def _get_most_used_tools(user_id: str = "default", limit: int = 5) -> list[dict]
         return []
 
 
-async def _build_system_prompt(session_id: str, user_message: str, user_id: str) -> str:
-    """构建完整的 system prompt，注入人格 + 记忆上下文."""
+async def _build_system_prompt(session_id: str, user_message: str, user_id: str, expert_id: str | None = None) -> str:
+    """构建完整的 system prompt，支持注入专家灵魂 + 人格 + 记忆上下文."""
     parts: list[str] = []
 
-    # 基础 system prompt
-    parts.append(
-        "你是 EvoGen，一个智能助手。请用中文简洁回复。\\n\\n"
-        "## 对话上下文规则\\n"
-        "用户可能使用省略主语/宾语的短句（如'地址'、'在哪'、'价格呢'），"
-        "你必须关联前几轮对话历史来理解省略的部分。"
-        "如果上几轮在讨论某家医院，用户说'地址'就是在问那家医院的地址。\\n\\n"
-        "## 禁止幻觉\\n"
-        "除非用户明确提及，否则不要虚构任何部署环境信息（服务器提供商、域名、IP地址、云服务商等）。"
-        "如果你不确定某个信息，请直接说不知道，不要编造。\\n"
-    )
+    # ── 专家灵魂注入（优先于默认人格）──
+    if expert_id:
+        try:
+            from backend.api.expert_routes import get_expert_soul, get_expert_name
+            soul = get_expert_soul(expert_id)
+            if soul:
+                parts.append(soul)
+                expert_name = get_expert_name(expert_id) or expert_id
+                logger.debug(f"Expert soul injected: {expert_name} (id={expert_id})")
+        except Exception as e:
+            logger.warning(f"Failed to inject expert soul: {e}")
+            parts.append(
+                "你是 EvoGen，一个智能助手。请用中文简洁回复。\n\n"
+                "## 对话上下文规则\n"
+                "用户可能使用省略主语/宾语的短句（如'地址'、'在哪'、'价格呢'），"
+                "你必须关联前几轮对话历史来理解省略的部分。"
+                "如果上几轮在讨论某家医院，用户说'地址'就是在问那家医院的地址。\n\n"
+                "## 禁止幻觉\n"
+                "除非用户明确提及，否则不要虚构任何部署环境信息（服务器提供商、域名、IP地址、云服务商等）。"
+                "如果你不确定某个信息，请直接说不知道，不要编造。\n"
+            )
+    else:
+        # 基础 system prompt（非专家模式）
+        parts.append(
+            "你是 EvoGen，一个智能助手。请用中文简洁回复。\n\n"
+            "## 对话上下文规则\n"
+            "用户可能使用省略主语/宾语的短句（如'地址'、'在哪'、'价格呢'），"
+            "你必须关联前几轮对话历史来理解省略的部分。"
+            "如果上几轮在讨论某家医院，用户说'地址'就是在问那家医院的地址。\n\n"
+            "## 禁止幻觉\n"
+            "除非用户明确提及，否则不要虚构任何部署环境信息（服务器提供商、域名、IP地址、云服务商等）。"
+            "如果你不确定某个信息，请直接说不知道，不要编造。\n"
+        )
 
     # ── 模板库提示（让 Agent 知道可以生成模板报告）──
     # 放在基础 prompt 后、记忆之前，确保 Agent 能读到
@@ -3180,7 +3203,7 @@ def _validate_report_quality(report: str) -> dict:
     }
 
 
-async def _llm_stream_generator(message: str, session_id: str, user_id: str = "default"):
+async def _llm_stream_generator(message: str, session_id: str, user_id: str = "default", expert_id: str | None = None):
     """主入口：处理用户消息，管理联网搜索 + 浏览器工具调用 + LLM 对话.
 
     流程：
@@ -3191,6 +3214,18 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
     5. 流式输出最终回复
     """
     session_id, is_new = _ensure_session(session_id, user_id=user_id)
+
+    # 如果是新专家会话，标记 profile 为 expert:<id>
+    if is_new and expert_id:
+        try:
+            from backend.db.connection import get_db
+            get_db().execute(
+                "UPDATE sessions SET profile=? WHERE id=?",
+                (f"expert:{expert_id}", session_id),
+            )
+            get_db().commit()
+        except Exception:
+            pass
 
     # ⚠️ 必须在保存用户消息前加载历史，避免当前消息自重复
     recent_history = _load_recent_messages(session_id, max_messages=20)
@@ -3307,8 +3342,8 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
         else:
             yield f"data: {json.dumps({'status': 'skip_decompose', 'message': '简单任务，直接处理'})}\\n\\n"
 
-    # ── 构建 system prompt（含人格 + 记忆 + 搜索上下文 + 工具说明） ──
-    system_prompt = await _build_system_prompt(session_id, message, user_id)
+    # ── 构建 system prompt（含专家灵魂 + 人格 + 记忆 + 搜索上下文 + 工具说明） ──
+    system_prompt = await _build_system_prompt(session_id, message, user_id, expert_id=expert_id)
     system_prompt = build_search_augmented_prompt(system_prompt, message, search_context)
 
     # ── 注入工具使用说明
@@ -3459,9 +3494,9 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
 
 @router.post("/chat")
 async def agent_chat(request: ChatRequest, req: Request, user_id: str = Depends(get_current_user)):
-    """SSE 流式对话端点."""
+    """SSE 流式对话端点，支持 expert_id 以启动专家子 Agent。"""
     return StreamingResponse(
-        _llm_stream_generator(request.message, request.session, user_id=user_id),
+        _llm_stream_generator(request.message, request.session, user_id=user_id, expert_id=request.expert_id),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

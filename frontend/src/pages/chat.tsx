@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { Plus } from 'lucide-react';
+import { useSearchParams, useParams } from 'react-router-dom';
+import { Plus, ArrowLeft } from 'lucide-react';
 import { useSessionMessages } from '@/hooks/use-sessions';
 import { EvoGenWS } from '@/lib/ws';
 import { cn, generateId } from '@/lib/utils';
@@ -13,7 +13,19 @@ import { WelcomeEmpty } from '@/components/chat/welcome-empty';
 import { ThinkingBubble } from '@/components/chat/thinking-bubble';
 import type { ChatMsg, WsAgentEvent } from '@/types';
 
+/* ── 专家信息映射（仅前端视觉差异） ──────────────────── */
+const EXPERT_INFO: Record<string, { name: string; icon: string; color: string }> = {
+  'security-engineer': { name: '安全工程师', icon: '🛡️', color: '#ff6b6b' },
+  'python-engineer':   { name: 'Python 工程师', icon: '🐍', color: '#4ecdc4' },
+  'ops-engineer':      { name: '运维工程师', icon: '⚙️', color: '#45b7d1' },
+  'data-analyst':      { name: '数据分析师', icon: '📊', color: '#96ceb4' },
+  'doc-engineer':      { name: '文档工程师', icon: '📝', color: '#e8c86a' },
+  'general-assistant': { name: '通用助手', icon: '🤖', color: '#a29bfe' },
+};
+
 export function ChatPage() {
+  const { expertId } = useParams<{ expertId?: string }>();
+  const expertInfo = expertId ? EXPERT_INFO[expertId] : null;
   const [searchParams, setSearchParams] = useSearchParams();
   const activeId = searchParams.get('session') || '';
   const [input, setInput] = useState('');
@@ -155,6 +167,7 @@ export function ChatPage() {
     };
     const body: Record<string, unknown> = { message: text };
     if (activeId) body.session = activeId;
+    if (expertId) body.expert_id = expertId;
 
     try {
       const res = await fetch(`${B}/api/v1/agent/chat`, { method: 'POST', headers: H, body: JSON.stringify(body) });
@@ -279,9 +292,27 @@ export function ChatPage() {
         }}
       >
         <div className="flex items-center gap-3 min-w-0">
-          <h1 className="text-[15px] font-semibold text-primary truncate">
-            {activeId ? (msgData?.messages?.[0]?.content?.slice(0, 40) || '对话') : '对话'}
-          </h1>
+          {expertInfo ? (
+            <>
+              <button
+                onClick={() => window.history.back()}
+                className="flex items-center gap-1.5 text-[13px] text-secondary hover:text-primary transition-colors mr-1"
+              >
+                <ArrowLeft style={{ width: 16, height: 16 }} />
+              </button>
+              <div className="flex items-center gap-2">
+                <span className="text-[16px]">{expertInfo.icon}</span>
+                <div>
+                  <h1 className="text-[14px] font-semibold text-primary leading-tight">{expertInfo.name}</h1>
+                  <p className="text-[10px] text-secondary mt-0.5 leading-tight">专家模式</p>
+                </div>
+              </div>
+            </>
+          ) : (
+            <h1 className="text-[15px] font-semibold text-primary truncate">
+              {activeId ? (msgData?.messages?.[0]?.content?.slice(0, 40) || '对话') : '对话'}
+            </h1>
+          )}
           <span
             className={cn(
               'text-[10px] px-2 py-0.5 rounded-full font-semibold uppercase tracking-wider flex items-center gap-1.5',
@@ -302,6 +333,7 @@ export function ChatPage() {
             {wsStatus === 'connected' ? 'LIVE' : wsStatus === 'connecting' ? 'SYNC' : 'OFF'}
           </span>
         </div>
+        {!expertInfo && (
         <button
           className="flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium rounded-lg transition-all text-secondary hover:text-primary hover:bg-hover"
           onClick={newChat}
@@ -309,6 +341,7 @@ export function ChatPage() {
           <Plus style={{ width: 14, height: 14 }} />
           新对话
         </button>
+        )}
       </header>
 
       {/* ── Content ────────────────────────────────────────────── */}

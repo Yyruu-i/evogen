@@ -1,24 +1,29 @@
-import { useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { Plus } from 'lucide-react';
-import { useSessionMessages } from '@/hooks/use-sessions';
+import { useParams } from 'react-router-dom';
+import { ArrowLeft } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { MessageBubble } from '@/components/chat/message-bubble';
 import { ChatInput } from '@/components/chat/chat-input';
-import { WelcomeEmpty } from '@/components/chat/welcome-empty';
 import { ThinkingBubble } from '@/components/chat/thinking-bubble';
 import { useChat } from '@/hooks/use-chat';
-import type { ChatMsg } from '@/types';
 
-export function ChatPage() {
-  const [searchParams] = useSearchParams();
-  const activeId = searchParams.get('session') || '';
-  const { data: msgData, isLoading: msgsLoading } = useSessionMessages(activeId);
+const EXPERT_INFO: Record<string, { name: string; icon: string; color: string }> = {
+  'security-engineer': { name: '安全工程师', icon: '🛡️', color: '#ff6b6b' },
+  'python-engineer':   { name: 'Python 工程师', icon: '🐍', color: '#4ecdc4' },
+  'ops-engineer':      { name: '运维工程师', icon: '⚙️', color: '#45b7d1' },
+  'data-analyst':      { name: '数据分析师', icon: '📊', color: '#96ceb4' },
+  'doc-engineer':      { name: '文档工程师', icon: '📝', color: '#e8c86a' },
+  'general-assistant': { name: '通用助手', icon: '🤖', color: '#a29bfe' },
+};
+
+export function ExpertChatPage() {
+  const { expertId } = useParams<{ expertId?: string }>();
+  const expertInfo = expertId ? EXPERT_INFO[expertId] : null;
 
   const {
     input,
     setInput,
     streamingUi,
+    msgsLoading,
     chatMessages,
     wsStatus,
     handleSend,
@@ -26,7 +31,7 @@ export function ChatPage() {
     handleStop,
     newChat,
     messagesEndRef,
-  } = useChat({ mode: 'normal' });
+  } = useChat({ mode: 'expert', expertId });
 
   return (
     <div className="flex flex-col h-full overflow-hidden" style={{ background: 'var(--color-bg-deep)' }}>
@@ -41,9 +46,25 @@ export function ChatPage() {
         }}
       >
         <div className="flex items-center gap-3 min-w-0">
-          <h1 className="text-[15px] font-semibold text-primary truncate">
-            {activeId ? (msgData?.messages?.[0]?.content?.slice(0, 40) || '对话') : '对话'}
-          </h1>
+          {expertInfo ? (
+            <>
+              <button
+                onClick={() => window.history.back()}
+                className="flex items-center gap-1.5 text-[13px] text-secondary hover:text-primary transition-colors mr-1"
+              >
+                <ArrowLeft style={{ width: 16, height: 16 }} />
+              </button>
+              <div className="flex items-center gap-2">
+                <span className="text-[16px]">{expertInfo.icon}</span>
+                <div>
+                  <h1 className="text-[14px] font-semibold text-primary leading-tight">{expertInfo.name}</h1>
+                  <p className="text-[10px] text-secondary mt-0.5 leading-tight">专家模式</p>
+                </div>
+              </div>
+            </>
+          ) : (
+            <h1 className="text-[15px] font-semibold text-primary truncate">专家</h1>
+          )}
           <span
             className={cn(
               'text-[10px] px-2 py-0.5 rounded-full font-semibold uppercase tracking-wider flex items-center gap-1.5',
@@ -64,19 +85,28 @@ export function ChatPage() {
             {wsStatus === 'connected' ? 'LIVE' : wsStatus === 'connecting' ? 'SYNC' : 'OFF'}
           </span>
         </div>
-        <button
-          className="flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium rounded-lg transition-all text-secondary hover:text-primary hover:bg-hover"
-          onClick={newChat}
-        >
-          <Plus style={{ width: 14, height: 14 }} />
-          新对话
-        </button>
       </header>
 
       {/* ── Content ────────────────────────────────────────────── */}
       <main className="flex flex-col flex-1 min-h-0">
-        {!activeId && chatMessages.length === 0 ? (
-          <WelcomeEmpty onSuggestionClick={(text) => setInput(text)} />
+        {chatMessages.length === 0 ? (
+          <section className="flex flex-col items-center flex-1 justify-center px-4 pb-16">
+            <div
+              className="w-18 h-18 rounded-2xl flex items-center justify-center mb-6"
+              style={{
+                background: 'linear-gradient(135deg, rgba(255,107,107,0.15), rgba(0,240,255,0.1))',
+                border: '1px solid rgba(255,107,107,0.15)',
+              }}
+            >
+              <span className="text-3xl">{expertInfo?.icon || '🤖'}</span>
+            </div>
+            <h2 className="text-2xl font-bold tracking-tight mb-2 text-primary">
+              {expertInfo?.name || '专家'} 已就绪
+            </h2>
+            <p className="text-[13px] mb-8 text-secondary">
+              向我提问，我会用专业知识为你解答
+            </p>
+          </section>
         ) : (
           <section className="flex flex-col flex-1 pt-2 md:pt-4 px-4 md:px-6 pb-4 w-full mx-auto overflow-y-auto">
             <div className="flex-1 space-y-4">

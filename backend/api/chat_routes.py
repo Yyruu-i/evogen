@@ -12,6 +12,7 @@ import sys
 import tempfile
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 import httpx
 from typing import AsyncGenerator
@@ -1403,11 +1404,14 @@ def _run_mcp_tool(script_path: str, method: str, arguments: dict) -> str:
 
     try:
         payload = json.dumps(arguments)
+        # 继承父进程环境变量
+        env = os.environ.copy()
         result = subprocess.run(
             ["python3", full_path, method, payload],
             capture_output=True,
             text=True,
             timeout=300,
+            env=env,
         )
 
         if result.returncode != 0:
@@ -1480,6 +1484,17 @@ def _run_mcp_tool(script_path: str, method: str, arguments: dict) -> str:
                     lines.append(f"  · {r}")
             if data.get("summary"):
                 lines.append(f"摘要: {data['summary']}")
+            # AI 分析标识
+            if data.get("_ai_used"):
+                lines.append("分析方式: 🤖 AI 智能分析")
+            elif data.get("analysis"):
+                lines.append(f"分析方式: 🤖 AI 分析（{data['analysis'][:80]}...）")
+            else:
+                lines.append("分析方式: 📋 规则判定")
+            # 显示 AI 分析摘要
+            analysis = data.get("analysis", "")
+            if analysis and len(analysis) > 20:
+                lines.append(f"AI分析: {analysis[:200]}{'...' if len(analysis) > 200 else ''}")
             # AI 分析标识
             if data.get("_ai_used"):
                 lines.append("分析方式: 🤖 AI 智能分析")
@@ -3237,3 +3252,20 @@ async def agent_chat(request: ChatRequest, req: Request, user_id: str = Depends(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ── 扫描进度查询 ──
+_HERMES_SEC_DIR = Path.home() / ".hermes" / ".sec-inspect-data" / "_progress"
+
+@router.get("/scan-progress/{target_path:path}")
+async def get_scan_progress(target_path: str):
+    """查询扫描进度。"""
+    safe_name = target_path.replace(".", "_").replace(":", "_")
+    fpath = _HERMES_SEC_DIR / f"{safe_name}.json"
+    if fpath.exists():
+        try:
+            with open(fpath) as f:
+                return json.load(f)
+        except Exception:
+            return {"stage": "error", "detail": "读取进度失败", "percent": -1}
+    return {"stage": "idle", "detail": "", "percent": 0}

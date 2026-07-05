@@ -32,9 +32,22 @@ DB_PATH = DATA_DIR / "security_inspection.db"
 PROGRESS_DIR = DATA_DIR / "_progress"
 PROGRESS_DIR.mkdir(exist_ok=True)
 
-# DeepSeek API（用于 AI 风险分析，可选）
+# 从环境变量或 ~/.hermes/.env 读取 DeepSeek API 配置
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
+
+# 如果环境变量没有，尝试读 ~/.hermes/.env
+if not DEEPSEEK_API_KEY:
+    _hermes_env = Path.home() / ".hermes" / ".env"
+    if _hermes_env.exists():
+        with open(_hermes_env) as _f:
+            for _line in _f:
+                _line = _line.strip()
+                if _line.startswith("DEEPSEEK_API_KEY="):
+                    DEEPSEEK_API_KEY = _line.split("=", 1)[1].strip().strip("'\"")
+                elif _line.startswith("DEEPSEEK_BASE_URL="):
+                    DEEPSEEK_BASE_URL = _line.split("=", 1)[1].strip().strip("'\"")
+
 _AI_CLIENT = None
 if DEEPSEEK_API_KEY:
     try:

@@ -2082,6 +2082,22 @@ async def _execute_tool(tool_name: str, arguments: dict, session_id: str, user_i
                 except Exception as e:
                     logger.debug(f"Auto-store artifact for {tool_name} skipped: {e}")
 
+            # ── 工具执行结果自动存入知识库（供后续检索）──
+            if tool_name not in ("gen_security_report", "validate_report", "gen_selection_plan", "get_asset_profile", "retest_compare"):
+                try:
+                    from backend.db.connection import get_db
+                    from backend.api.knowledge_routes import _KNOWLEDGE_TABLE, _utcnow
+                    import uuid
+                    target = arguments.get("target", arguments.get("subnet", tool_name))
+                    kb_content = f"[{tool_name}] 对 {target} 执行检测: {result[:300]}"
+                    get_db().execute(f"""
+                        INSERT OR IGNORE INTO {_KNOWLEDGE_TABLE} (id, user_id, content, source, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    """, (str(uuid.uuid4()), user_id, kb_content, f"tool:{tool_name}", _utcnow(), _utcnow()))
+                    get_db().commit()
+                except Exception as e:
+                    logger.debug(f"Auto-store to knowledge base skipped: {e}")
+
             # ── gen_security_report: 自动存入制品 ──
             if tool_name == "gen_security_report":
                 try:
@@ -3397,6 +3413,29 @@ async def _llm_stream_generator(message: str, session_id: str, user_id: str = "d
             logger.debug(f"CVE knowledge base injected ({len(kb_results)} entries)")
     except Exception as e:
         logger.debug(f"CVE knowledge base skipped: {e}")
+
+    # ── 通用知识库检索（用户消息匹配知识库内容，注入为上下文）──
+    try:
+        from backend.db.connection import get_db
+        from backend.api.knowledge_routes import _KNOWLEDGE_TABLE
+        like_pattern = f"%{message}%"
+        kb_rows = get_db().execute(f"""
+            SELECT content, source, created_at
+            FROM {_KNOWLEDGE_TABLE}
+            WHERE user_id = ? AND (content LIKE ? OR source LIKE ?)
+            ORDER BY created_at DESC
+            LIMIT 5
+        """, (user_id, like_pattern, like_pattern)).fetchall()
+        if kb_rows:
+            kb_entries = []
+            for r in kb_rows:
+                c = r["content"][:200]
+                s = r["source"] or "知识库"
+                kb_entries.append(f"- [{s}] {c}")
+            system_prompt += "\n\n## 相关历史知识\n系统知识库中找到以下与您问题相关的内容（供参考）：\n" + "\n".join(kb_entries)
+            logger.debug(f"Knowledge base injected ({len(kb_rows)} entries)")
+    except Exception as e:
+        logger.debug(f"Knowledge base search skipped: {e}")
 
     # ── 工具语义推荐（基于消息内容推荐最适配工具）──
     try:

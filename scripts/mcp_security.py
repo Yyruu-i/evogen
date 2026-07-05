@@ -318,7 +318,7 @@ def port_scan_target(target: str, ports: str = "", enable_service_detect: bool =
 
 
 def security_scan(target: str, vendor: str = "", scan_type: str = "port_scan", enable_failover: bool = True) -> dict:
-    \"\"\"执行安全检查（支持失败自动切换）— 旧接口，推荐使用 port_scan().
+    """执行安全检查（支持失败自动切换）— 旧接口，推荐使用 port_scan().
 
     Args:
         target: 目标 IP
@@ -489,7 +489,7 @@ def _do_single_scan(target: str, vendor: str, scan_type: str) -> dict:
 
 
 def service_detect(target: str, vendor: str = "") -> dict:
-    \"\"\"服务版本识别 — 识别目标开放端口上的服务名和版本信息.
+    """服务版本识别 — 识别目标开放端口上的服务名和版本信息.
 
     Args:
         target: 目标 IP
@@ -497,7 +497,7 @@ def service_detect(target: str, vendor: str = "") -> dict:
 
     Returns:
         {\"success\": bool, \"data\": {...}, \"error\": str|None}
-    \"\"\"
+    """
     try:
         result = port_scan_target(target, enable_service_detect=True, progress_target=target)
         for p in result.get("ports", []):
@@ -517,7 +517,7 @@ def service_detect(target: str, vendor: str = "") -> dict:
 
 
 def weakpass_check(target: str, vendor: str = "") -> dict:
-    \"\"\"弱口令探测 — 检测 SSH/RDP/MySQL/Redis 等服务的弱口令和默认口令.
+    """弱口令探测 — 检测 SSH/RDP/MySQL/Redis 等服务的弱口令和默认口令.
 
     Args:
         target: 目标 IP
@@ -525,7 +525,7 @@ def weakpass_check(target: str, vendor: str = "") -> dict:
 
     Returns:
         {\"success\": bool, \"data\": {...}, \"error\": str|None}
-    \"\"\"
+    """
     try:
         now = datetime.now().isoformat()
         weak_port_list = [22, 23, 3389, 3306, 6379, 27017, 5432, 1521, 1433]
@@ -555,7 +555,7 @@ def weakpass_check(target: str, vendor: str = "") -> dict:
 
 
 def vuln_scan(target: str, vendor: str = "") -> dict:
-    \"\"\"漏洞扫描 — 使用 Nuclei 对目标进行自动化漏洞检测.
+    """漏洞扫描 — 使用 Nuclei 对目标进行自动化漏洞检测.
 
     Args:
         target: 目标 IP
@@ -563,7 +563,7 @@ def vuln_scan(target: str, vendor: str = "") -> dict:
 
     Returns:
         {\"success\": bool, \"data\": {...}, \"error\": str|None}
-    \"\"\"
+    """
     try:
         # 复用 security_scan 的端口扫描 + AI 分析能力
         result = security_scan(target=target, vendor=vendor, scan_type="port_scan", enable_failover=False)
@@ -579,7 +579,7 @@ def vuln_scan(target: str, vendor: str = "") -> dict:
 
 
 def web_vuln_scan(target: str, vendor: str = "") -> dict:
-    \"\"\"Web漏洞扫描 — 针对 Web 应用的专项漏洞检测，覆盖 SQL注入/XSS/Shiro RCE 等.
+    """Web漏洞扫描 — 针对 Web 应用的专项漏洞检测，覆盖 SQL注入/XSS/Shiro RCE 等.
 
     Args:
         target: 目标 IP 或 URL
@@ -587,7 +587,7 @@ def web_vuln_scan(target: str, vendor: str = "") -> dict:
 
     Returns:
         {\"success\": bool, \"data\": {...}, \"error\": str|None}
-    \"\"\"
+    """
     try:
         from urllib.parse import urlparse
         parsed = urlparse(target)
@@ -606,7 +606,7 @@ def web_vuln_scan(target: str, vendor: str = "") -> dict:
 
 
 def pen_test(target: str, vendor: str = "") -> dict:
-    \"\"\"自动化渗透测试 — 模拟攻击者视角，验证漏洞的可利用性和攻击链.
+    """自动化渗透测试 — 模拟攻击者视角，验证漏洞的可利用性和攻击链.
 
     Args:
         target: 目标 IP
@@ -614,7 +614,7 @@ def pen_test(target: str, vendor: str = "") -> dict:
 
     Returns:
         {\"success\": bool, \"data\": {...}, \"error\": str|None}
-    \"\"\"
+    """
     try:
         result = security_scan(target=target, vendor=vendor, scan_type="port_scan", enable_failover=False)
         data = result.get("data", {})
@@ -692,7 +692,7 @@ def batch_scan(targets: list, scan_type: str = "port_scan", vendor: str = "") ->
 
 
 # 兼容别名
-baseline_check = config_audit
+# (保留最后一个，在 config_audit 定义之后)
 
 
 
@@ -771,7 +771,7 @@ def gen_selection_plan(target_desc: str = "", exclude_types: str = "") -> dict:
 
 
 # 兼容别名
-baseline_check = config_audit
+# (保留最后一个，在 config_audit 定义之后)
 
 
 
@@ -906,7 +906,7 @@ def validate_report(target: str) -> dict:
 
 
 # 兼容别名
-baseline_check = config_audit
+# (保留最后一个，在 config_audit 定义之后)
 
 
 
@@ -956,7 +956,7 @@ def get_asset_profile(target: str) -> dict:
 
 
 # 兼容别名
-baseline_check = config_audit
+# (保留最后一个，在 config_audit 定义之后)
 
 
 
@@ -1088,7 +1088,7 @@ def config_audit(target: str, vendor: str = "") -> dict:
 
 
 # 兼容别名
-baseline_check = config_audit
+# (保留最后一个，在 config_audit 定义之后)
 
 
 
@@ -1141,7 +1141,7 @@ def evidence_snapshot(target: str, scan_id: str = "") -> dict:
 
 
 # 兼容别名
-baseline_check = config_audit
+# (保留最后一个，在 config_audit 定义之后)
 
 
 
@@ -1209,7 +1209,7 @@ def retest_compare(target: str) -> dict:
 
 
 # 兼容别名
-baseline_check = config_audit
+# (保留最后一个，在 config_audit 定义之后)
 
 
 
@@ -1813,7 +1813,6 @@ def gen_report(target: str, template: str = "standard") -> dict:
 baseline_check = config_audit
 
 
-
 # ════════════════════════════════════
 # MCP 入口
 # ════════════════════════════════════
@@ -1821,6 +1820,13 @@ baseline_check = config_audit
 METHODS = {
     "ping_sweep": ping_sweep,
     "security_scan": security_scan,
+    "service_detect": service_detect,
+    "vuln_scan": vuln_scan,
+    "weakpass_check": weakpass_check,
+    "config_audit": config_audit,
+    "web_vuln_scan": web_vuln_scan,
+    "pen_test": pen_test,
+    "port_scan": security_scan,
     "batch_scan": batch_scan,
     "gen_report": gen_report,
     "validate_report": validate_report,
